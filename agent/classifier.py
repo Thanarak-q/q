@@ -11,7 +11,6 @@ from typing import Any
 
 from openai import OpenAI
 
-from agent.planner import select_model_for_classification
 from config import AppConfig
 from utils.logger import get_logger
 
@@ -64,6 +63,8 @@ def classify_challenge(
     user_content = f"Challenge description: {description}"
     if file_info:
         user_content += f"\n\nAssociated files:\n{file_info}"
+
+    from agent.planner import select_model_for_classification
 
     model = select_model_for_classification(config)
 

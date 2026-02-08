@@ -4,13 +4,15 @@ Coordinates the classify -> plan -> solve loop, dispatching tool calls
 and managing the agent's state until a flag is found or limits are hit.
 
 Integrates: multi-model selection, graduated pivot system, cost tracking,
-session persistence, and optional Rich live dashboard.
+session persistence, optional Rich live dashboard, and callback-driven
+interactive UI support.
 """
 
 from __future__ import annotations
 
 import json
 import time
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -36,6 +38,139 @@ from utils.logger import console, get_logger
 from utils.session_manager import SessionManager, StepRecord
 
 
+# ------------------------------------------------------------------
+# Callback interface for UI integration
+# ------------------------------------------------------------------
+
+
+class AgentCallbacks(ABC):
+    """Abstract callback interface for agent UI integration.
+
+    Implement this to receive real-time events from the orchestrator.
+    The interactive chat UI implements these to render output with Rich.
+    """
+
+    @abstractmethod
+    def on_thinking(self, text: str) -> None:
+        """Called when the agent produces reasoning text."""
+
+    @abstractmethod
+    def on_tool_call(self, tool_name: str, args: dict) -> None:
+        """Called when a tool is about to be executed."""
+
+    @abstractmethod
+    def on_tool_result(self, tool_name: str, output: str, success: bool) -> None:
+        """Called when a tool finishes execution."""
+
+    @abstractmethod
+    def on_flag_found(self, flag: str) -> None:
+        """Called when a flag is discovered."""
+
+    @abstractmethod
+    def on_error(self, message: str) -> None:
+        """Called when an error occurs."""
+
+    @abstractmethod
+    def on_status(
+        self,
+        step: int,
+        max_steps: int,
+        tokens: int,
+        cost: float,
+        model: str,
+    ) -> None:
+        """Called to update the status bar after each iteration."""
+
+    @abstractmethod
+    def on_phase(self, phase: str, detail: str) -> None:
+        """Called during pipeline phases (classifying, planning, solving)."""
+
+    @abstractmethod
+    def on_pivot(self, level_name: str, pivot_count: int) -> None:
+        """Called when a strategy pivot occurs."""
+
+    @abstractmethod
+    def on_model_change(self, old_model: str, new_model: str) -> None:
+        """Called when the model is escalated."""
+
+    @abstractmethod
+    def on_context_summary(self) -> None:
+        """Called when context is summarized."""
+
+    @abstractmethod
+    def on_budget_warning(self, warning: str) -> None:
+        """Called when approaching budget limits."""
+
+    @abstractmethod
+    def on_iteration(self, current: int, total: int) -> None:
+        """Called at the start of each iteration."""
+
+    def on_ask_user(self, prompt: str) -> str:
+        """Called when the agent needs a hint from the user.
+
+        Default implementation reads from console.
+        """
+        return console.input("[bold]Your hint> [/bold]")
+
+
+class NullCallbacks(AgentCallbacks):
+    """No-op callback implementation for headless/batch mode.
+
+    Falls through to console output.
+    """
+
+    def on_thinking(self, text: str) -> None:
+        console.print(f"[thinking]{text}[/thinking]")
+
+    def on_tool_call(self, tool_name: str, args: dict) -> None:
+        console.print(
+            f"[tool_call]Tool: {tool_name}[/tool_call]  "
+            f"args={json.dumps(args, ensure_ascii=False)[:200]}"
+        )
+
+    def on_tool_result(self, tool_name: str, output: str, success: bool) -> None:
+        if success:
+            console.print(f"[result]{output[:500]}[/result]")
+        else:
+            console.print(f"[error]{output}[/error]")
+
+    def on_flag_found(self, flag: str) -> None:
+        console.print(f"\n[flag]FLAG FOUND: {flag}[/flag]")
+
+    def on_error(self, message: str) -> None:
+        console.print(f"[error]{message}[/error]")
+
+    def on_status(
+        self, step: int, max_steps: int, tokens: int, cost: float, model: str
+    ) -> None:
+        pass
+
+    def on_phase(self, phase: str, detail: str) -> None:
+        console.print(f"\n[step]{phase}:[/step] {detail}", style="bold")
+
+    def on_pivot(self, level_name: str, pivot_count: int) -> None:
+        console.print(
+            f"[info]Strategy pivot #{pivot_count}: {level_name}[/info]"
+        )
+
+    def on_model_change(self, old_model: str, new_model: str) -> None:
+        console.print(f"[info]Model: {old_model} -> {new_model}[/info]")
+
+    def on_context_summary(self) -> None:
+        console.print("[info]Summarizing context...[/info]")
+
+    def on_budget_warning(self, warning: str) -> None:
+        console.print(f"[info]{warning}[/info]")
+
+    def on_iteration(self, current: int, total: int) -> None:
+        console.rule(f"[step]Iteration {current}/{total}[/step]")
+
+
+# ------------------------------------------------------------------
+# SolveResult
+# ------------------------------------------------------------------
+
+
 @dataclass
 class SolveResult:
     """Result of a solve attempt."""
@@ -50,13 +185,18 @@ class SolveResult:
     total_tokens: int = 0
 
 
+# ------------------------------------------------------------------
+# Orchestrator
+# ------------------------------------------------------------------
+
+
 class Orchestrator:
     """The main ReAct agent that solves CTF challenges.
 
     Implements the observe-think-act loop with automatic tool dispatch,
     context management, graduated strategy pivoting, multi-model
-    selection, cost tracking, session persistence, and an optional
-    Rich live dashboard.
+    selection, cost tracking, session persistence, and callback-driven
+    UI integration.
     """
 
     def __init__(
@@ -67,6 +207,8 @@ class Orchestrator:
         session_manager: SessionManager | None = None,
         dashboard: Dashboard | None = None,
         enable_dashboard: bool = False,
+        callbacks: AgentCallbacks | None = None,
+        cost_tracker: CostTracker | None = None,
     ) -> None:
         """Initialise the orchestrator.
 
@@ -77,6 +219,8 @@ class Orchestrator:
             session_manager: Optional session persistence manager.
             dashboard: Optional pre-built dashboard instance.
             enable_dashboard: If True and no dashboard given, create one.
+            callbacks: Optional UI callback handler.
+            cost_tracker: Optional shared cost tracker (for session accumulation).
         """
         self._config = config or load_config()
         self._client = OpenAI(api_key=self._config.model.api_key)
@@ -90,12 +234,16 @@ class Orchestrator:
         self._iteration = 0
         self._found_flags: list[str] = []
         self._custom_flag_pattern: str | None = None
+        self._cancelled = False
+
+        # Callbacks (use NullCallbacks for backward compat)
+        self._cb: AgentCallbacks = callbacks or NullCallbacks()
 
         # --- Advanced features ---
         self._pivot = PivotManager(
             stall_threshold=self._config.agent.stall_threshold,
         )
-        self._cost = CostTracker(
+        self._cost = cost_tracker or CostTracker(
             budget_limit=self._config.agent.max_cost_per_challenge,
         )
         self._session = session_manager or SessionManager(
@@ -111,6 +259,25 @@ class Orchestrator:
         else:
             self._dashboard = None
 
+    @property
+    def cost_tracker(self) -> CostTracker:
+        """Access the cost tracker."""
+        return self._cost
+
+    @property
+    def current_model(self) -> str:
+        """Current model being used."""
+        return self._current_model
+
+    @current_model.setter
+    def current_model(self, model: str) -> None:
+        """Override the current model."""
+        self._current_model = model
+
+    def cancel(self) -> None:
+        """Cancel the current solve loop (called from Ctrl+C handler)."""
+        self._cancelled = True
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -121,6 +288,7 @@ class Orchestrator:
         files: list[Path] | None = None,
         target_url: str | None = None,
         flag_pattern: str | None = None,
+        forced_category: str | None = None,
     ) -> SolveResult:
         """Solve a CTF challenge.
 
@@ -132,11 +300,13 @@ class Orchestrator:
             files: Optional list of challenge file paths.
             target_url: Optional target service URL.
             flag_pattern: Optional custom flag regex pattern.
+            forced_category: Optional forced category string.
 
         Returns:
             SolveResult with success status and found flags.
         """
         self._custom_flag_pattern = flag_pattern
+        self._cancelled = False
 
         # Create session
         sid = self._session.new_session(
@@ -152,10 +322,10 @@ class Orchestrator:
 
         try:
             result = self._run_pipeline(
-                description, files, target_url, flag_pattern
+                description, files, target_url, flag_pattern, forced_category
             )
         except KeyboardInterrupt:
-            console.print("\n[error]Interrupted by user.[/error]")
+            self._cb.on_error("Interrupted by user.")
             self._session.update(status="paused")
             self._session.save()
             result = SolveResult(
@@ -198,12 +368,13 @@ class Orchestrator:
         """
         data = self._session.load(session_id)
         if data is None:
-            console.print(f"[error]Session {session_id} not found.[/error]")
+            self._cb.on_error(f"Session {session_id} not found.")
             return SolveResult(success=False, summary="Session not found.")
 
         self._custom_flag_pattern = flag_pattern or data.flag_pattern or None
         self._iteration = data.current_iteration
         self._found_flags = list(data.flags)
+        self._cancelled = False
 
         # Restore messages
         self._context._messages = list(data.messages)  # noqa: SLF001
@@ -215,10 +386,7 @@ class Orchestrator:
                 category = cat
                 break
 
-        console.print(
-            f"[info]Resuming session {session_id} "
-            f"at iteration {self._iteration}[/info]"
-        )
+        self._cb.on_phase("Resume", f"Session {session_id} at iteration {self._iteration}")
 
         self._session.update(status="in_progress")
         result = self._react_loop(category)
@@ -245,6 +413,7 @@ class Orchestrator:
         files: list[Path] | None,
         target_url: str | None,
         flag_pattern: str | None,
+        forced_category: str | None = None,
     ) -> SolveResult:
         """Run the full classify -> plan -> solve pipeline.
 
@@ -253,30 +422,37 @@ class Orchestrator:
             files: Challenge files.
             target_url: Target URL.
             flag_pattern: Custom flag regex.
+            forced_category: Optional forced category.
 
         Returns:
             SolveResult from the ReAct loop.
         """
         # --- Phase 1: Reconnaissance ---
-        console.print(
-            "\n[step]Step 1:[/step] Classifying challenge...", style="bold"
-        )
+        self._cb.on_phase("Classifying", "Detecting challenge category...")
         file_info = self._gather_file_info(files)
-        category = classify_challenge(
-            description, file_info, self._client, self._config
-        )
-        console.print(f"  Category: [thinking]{category.value}[/thinking]")
+
+        if forced_category:
+            category = Category.MISC
+            for cat in Category:
+                if cat.value == forced_category:
+                    category = cat
+                    break
+            self._cb.on_phase("Category", f"{category.value} (forced)")
+        else:
+            category = classify_challenge(
+                description, file_info, self._client, self._config
+            )
+            self._cb.on_phase("Category", category.value)
+
         self._session.update(category=category.value)
 
         # --- Phase 2: Planning ---
-        console.print(
-            "\n[step]Step 2:[/step] Creating attack plan...", style="bold"
-        )
+        self._cb.on_phase("Planning", "Creating attack plan...")
         playbook = get_playbook(category)
         plan = create_plan(
             description, category, file_info, self._client, self._config
         )
-        console.print(f"[thinking]{plan}[/thinking]")
+        self._cb.on_thinking(plan)
         self._session.update(plan=plan)
 
         # Select initial model
@@ -312,10 +488,9 @@ class Orchestrator:
         self._session.update(messages=self._context.messages)
 
         # --- Phase 4: ReAct loop ---
-        console.print(
-            f"\n[step]Step 3:[/step] Entering solve loop "
-            f"(max {self._config.agent.max_iterations} iterations)...",
-            style="bold",
+        self._cb.on_phase(
+            "Solving",
+            f"Entering solve loop (max {self._config.agent.max_iterations} steps)...",
         )
         return self._react_loop(category)
 
@@ -331,24 +506,25 @@ class Orchestrator:
         max_iter = self._config.agent.max_iterations
 
         while self._iteration < max_iter:
+            # Check cancellation
+            if self._cancelled:
+                self._cb.on_error("Cancelled by user.")
+                break
+
             self._iteration += 1
-            console.rule(
-                f"[step]Iteration {self._iteration}/{max_iter}[/step]"
-            )
+            self._cb.on_iteration(self._iteration, max_iter)
 
             # --- Budget check ---
             warning = self._cost.budget_warning()
             if warning:
-                console.print(f"[info]{warning}[/info]")
+                self._cb.on_budget_warning(warning)
             if self._cost.is_over_budget():
-                console.print(
-                    "[error]Budget limit reached. Stopping.[/error]"
-                )
+                self._cb.on_error("Budget limit reached. Stopping.")
                 break
 
             # --- Context window check ---
             if self._context.needs_summarization():
-                console.print("[info]Summarizing context...[/info]")
+                self._cb.on_context_summary()
                 self._context.summarize_history()
                 self._session.add_step(StepRecord(
                     iteration=self._iteration,
@@ -376,7 +552,7 @@ class Orchestrator:
             # --- Process text content ---
             text_content = response_message.get("content", "") or ""
             if text_content:
-                console.print(f"[thinking]{text_content}[/thinking]")
+                self._cb.on_thinking(text_content)
                 if self._dashboard:
                     self._dashboard.set_thinking(text_content)
 
@@ -396,11 +572,22 @@ class Orchestrator:
             tool_calls = response_message.get("tool_calls")
             if tool_calls:
                 for tc in tool_calls:
+                    if self._cancelled:
+                        break
                     flags = self._execute_tool_call(tc)
                     if flags:
                         return self._flag_found(flags, category)
             elif not text_content:
                 self._log.warning("Empty response from LLM")
+
+            # --- Status update ---
+            self._cb.on_status(
+                step=self._iteration,
+                max_steps=max_iter,
+                tokens=self._cost.total_tokens,
+                cost=self._cost.total_cost,
+                model=self._current_model,
+            )
 
             # --- Dashboard progress ---
             if self._dashboard:
@@ -416,16 +603,19 @@ class Orchestrator:
             self._session.update(messages=self._context.messages)
             self._session.save()
 
-        # Exhausted iterations
-        console.print(
-            "\n[error]Max iterations reached without finding flag.[/error]"
+        # Exhausted iterations or cancelled
+        summary = (
+            "Cancelled by user."
+            if self._cancelled
+            else "Exhausted maximum iterations without finding the flag."
         )
+        self._cb.on_error(summary)
         return SolveResult(
             success=False,
             flags=self._found_flags,
             iterations=self._iteration,
             category=category.value,
-            summary="Exhausted maximum iterations without finding the flag.",
+            summary=summary,
         )
 
     # ------------------------------------------------------------------
@@ -489,6 +679,7 @@ class Orchestrator:
                     f"API error (attempt {attempt + 1}/3): {exc}"
                 )
                 if attempt == 2:
+                    self._cb.on_error(f"API error after 3 retries: {exc}")
                     return None
                 time.sleep(2**attempt)
 
@@ -515,24 +706,20 @@ class Orchestrator:
             args = json.loads(func["arguments"])
         except json.JSONDecodeError:
             error_msg = f"Invalid JSON arguments: {func['arguments']}"
-            console.print(f"[error]{error_msg}[/error]")
+            self._cb.on_error(error_msg)
             self._context.add_tool_result(tc_id, error_msg)
             return []
 
-        console.print(
-            f"[tool_call]Tool: {name}[/tool_call]  "
-            f"args={json.dumps(args, ensure_ascii=False)[:200]}"
-        )
+        self._cb.on_tool_call(name, args)
 
         result = self._registry.execute(name, args)
 
-        if result.success:
-            console.print(f"[result]{result.output[:500]}[/result]")
-            self._pivot.record_progress(self._iteration)
-        else:
-            console.print(f"[error]{result.error}[/error]")
-
         output = result.output if result.success else f"[ERROR] {result.error}"
+        self._cb.on_tool_result(name, output, result.success)
+
+        if result.success:
+            self._pivot.record_progress(self._iteration)
+
         self._context.add_tool_result(tc_id, output)
 
         # Dashboard update
@@ -554,9 +741,8 @@ class Orchestrator:
         flags = extract_flags(output, self._custom_flag_pattern)
         if flags:
             self._found_flags.extend(flags)
-            console.print(
-                f"\n[flag]FLAG FOUND: {', '.join(flags)}[/flag]"
-            )
+            for f in flags:
+                self._cb.on_flag_found(f)
             if self._dashboard:
                 for f in flags:
                     self._dashboard.add_flag(f)
@@ -572,10 +758,7 @@ class Orchestrator:
         Args:
             level: The pivot escalation level to apply.
         """
-        console.print(
-            f"[info]Strategy pivot: {level.name} "
-            f"(pivot #{self._pivot.pivot_count})[/info]"
-        )
+        self._cb.on_pivot(level.name, self._pivot.pivot_count)
 
         prompt = self._pivot.get_pivot_prompt(level)
         self._context.add_user_message(prompt)
@@ -594,18 +777,15 @@ class Orchestrator:
             self._current_model = select_model_for_task(
                 Category.MISC, self._config, is_escalated=True
             )
-            console.print(
-                f"[info]Model escalated: {old_model} -> "
-                f"{self._current_model}[/info]"
-            )
+            self._cb.on_model_change(old_model, self._current_model)
 
         # Ask-user level
         if level == PivotLevel.ASK_USER:
-            console.print(
-                "\n[bold yellow]The agent is stuck and needs a hint.[/bold yellow]"
+            hint = self._cb.on_ask_user(
+                "The agent is stuck and needs a hint. "
+                "Please provide guidance:"
             )
-            hint = console.input("[bold]Your hint> [/bold]")
-            if hint.strip():
+            if hint and hint.strip():
                 self._context.add_user_message(
                     f"User hint: {hint.strip()}"
                 )
@@ -633,12 +813,12 @@ class Orchestrator:
         for f in flags:
             if f not in self._found_flags:
                 self._found_flags.append(f)
-        console.print(
-            f"\n[flag]FLAG FOUND: {', '.join(self._found_flags)}[/flag]"
-        )
+                self._cb.on_flag_found(f)
+
         if self._dashboard:
             for f in flags:
                 self._dashboard.add_flag(f)
+
         return SolveResult(
             success=True,
             flags=self._found_flags,
