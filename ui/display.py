@@ -108,6 +108,12 @@ class Display:
         prefix = " " if success else " "
         self.console.print(f"  [{style}]{prefix}{output}[/{style}]")
 
+    def show_answer(self, answer: str, confidence: str, flag: str | None) -> None:
+        """Display the agent's answer."""
+        self.console.print(f"\n  [success]ANSWER ({confidence}):[/success] {answer}")
+        if flag:
+            self.console.print(f"  [flag]FLAG: {flag}[/flag]")
+
     def show_error(self, message: str) -> None:
         """Display an error message."""
         self.console.print(f"\n  [error]{message}[/error]")

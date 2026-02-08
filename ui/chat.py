@@ -79,6 +79,9 @@ class ChatCallbacks(AgentCallbacks):
     def on_tool_result(self, tool_name: str, output: str, success: bool) -> None:
         self._display.show_tool_result(output, success)
 
+    def on_answer(self, answer: str, confidence: str, flag: str | None) -> None:
+        self._display.show_answer(answer, confidence, flag)
+
     def on_flag_found(self, flag: str) -> None:
         self._display.show_flag(flag)
 
