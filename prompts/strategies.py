@@ -130,13 +130,19 @@ in one focused attempt.
 FINAL_ATTEMPT_PROMPT = """\
 ## Final Attempts
 
-You are approaching the maximum iteration limit. Focus on:
+You are approaching the maximum iteration limit. You MUST wrap up now.
+
+If you have ANY findings, call answer_user immediately with what you know.
+
+If you are still searching for a flag:
 1. Re-examine any data you've already collected for missed flags
 2. Try simple approaches: strings, grep for flag patterns, base64 decode
 3. Check if the flag is hidden in metadata, comments, or alternate data streams
-4. Consider if the challenge has multiple stages and you missed one
 
-This is your last chance — prioritize quick wins.
+If you have not found a flag but have useful information, call answer_user
+with your analysis and set confidence to "low".
+
+This is your last chance — call answer_user with your best answer NOW.
 """
 
 # --- Context summary ---

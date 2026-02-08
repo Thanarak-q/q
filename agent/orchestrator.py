@@ -1,11 +1,12 @@
 """Main ReAct agent loop (orchestrator).
 
 Coordinates the classify -> plan -> solve loop, dispatching tool calls
-and managing the agent's state until a flag is found or limits are hit.
+and managing the agent's state until a flag is found, the agent calls
+answer_user, or limits are hit.
 
 Integrates: multi-model selection, graduated pivot system, cost tracking,
-session persistence, optional Rich live dashboard, and callback-driven
-interactive UI support.
+session persistence, intent-aware stop conditions, optional Rich live
+dashboard, and callback-driven interactive UI support.
 """
 
 from __future__ import annotations
@@ -19,7 +20,15 @@ from typing import Any, Optional
 
 from openai import APIError, OpenAI, RateLimitError
 
-from agent.classifier import Category, classify_challenge, get_playbook
+from agent.classifier import (
+    Category,
+    IntentResult,
+    UserIntent,
+    classify_challenge,
+    classify_intent,
+    get_playbook,
+    max_steps_for_intent,
+)
 from agent.context_manager import ContextManager
 from agent.planner import (
     PivotLevel,
@@ -65,6 +74,10 @@ class AgentCallbacks(ABC):
     @abstractmethod
     def on_flag_found(self, flag: str) -> None:
         """Called when a flag is discovered."""
+
+    @abstractmethod
+    def on_answer(self, answer: str, confidence: str, flag: str | None) -> None:
+        """Called when the agent calls answer_user."""
 
     @abstractmethod
     def on_error(self, message: str) -> None:
@@ -137,6 +150,11 @@ class NullCallbacks(AgentCallbacks):
     def on_flag_found(self, flag: str) -> None:
         console.print(f"\n[flag]FLAG FOUND: {flag}[/flag]")
 
+    def on_answer(self, answer: str, confidence: str, flag: str | None) -> None:
+        console.print(f"\n[bold green]ANSWER ({confidence}):[/bold green] {answer}")
+        if flag:
+            console.print(f"[flag]FLAG: {flag}[/flag]")
+
     def on_error(self, message: str) -> None:
         console.print(f"[error]{message}[/error]")
 
@@ -177,8 +195,11 @@ class SolveResult:
 
     success: bool
     flags: list[str] = field(default_factory=list)
+    answer: str = ""
+    answer_confidence: str = ""
     iterations: int = 0
     category: str = "unknown"
+    intent: str = "find_flag"
     summary: str = ""
     session_id: str = ""
     cost_usd: float = 0.0
@@ -235,6 +256,7 @@ class Orchestrator:
         self._found_flags: list[str] = []
         self._custom_flag_pattern: str | None = None
         self._cancelled = False
+        self._intent: IntentResult | None = None
 
         # Callbacks (use NullCallbacks for backward compat)
         self._cb: AgentCallbacks = callbacks or NullCallbacks()
@@ -427,6 +449,14 @@ class Orchestrator:
         Returns:
             SolveResult from the ReAct loop.
         """
+        # --- Phase 0: Intent classification ---
+        self._cb.on_phase("Intent", "Classifying user intent...")
+        self._intent = classify_intent(description, self._client, self._config)
+        self._cb.on_phase(
+            "Intent",
+            f"{self._intent.intent.value} — {self._intent.stop_criteria}",
+        )
+
         # --- Phase 1: Reconnaissance ---
         self._cb.on_phase("Classifying", "Detecting challenge category...")
         file_info = self._gather_file_info(files)
@@ -462,9 +492,11 @@ class Orchestrator:
         self._log.info(f"Initial model: {self._current_model}")
 
         # --- Phase 3: Setup context ---
+        intent_context = self._build_intent_context()
         system_prompt = build_system_prompt(
             category_playbook=playbook,
             extra_context=self._build_extra_context(target_url, file_info),
+            intent_context=intent_context,
         )
         self._context.set_system_prompt(system_prompt)
 
@@ -474,10 +506,31 @@ class Orchestrator:
         if file_info:
             initial_message += f"\n\nFiles:\n{file_info}"
         initial_message += f"\n\nAttack plan:\n{plan}"
-        initial_message += (
-            "\n\nBegin solving. Start with step 1 of the plan. "
-            "Think step by step, use tools, and find the flag."
-        )
+
+        # Tailor the initial instruction based on intent
+        if self._intent.intent == UserIntent.FIND_FLAG:
+            initial_message += (
+                "\n\nBegin solving. Start with step 1 of the plan. "
+                "Think step by step, use tools, and find the flag. "
+                "When you find it, call answer_user with the flag."
+            )
+        elif self._intent.intent == UserIntent.ANSWER_QUESTION:
+            initial_message += (
+                f"\n\nThe user wants to know: {self._intent.specific_question}\n"
+                f"Find the answer efficiently and call answer_user when ready. "
+                f"Do not search for a flag unless the answer IS a flag."
+            )
+        elif self._intent.intent == UserIntent.ANALYZE:
+            initial_message += (
+                "\n\nPerform a thorough analysis and call answer_user with "
+                "your findings when done."
+            )
+        else:  # HELP_SOLVE
+            initial_message += (
+                "\n\nProvide guidance and call answer_user with your "
+                "recommendations when ready."
+            )
+
         self._context.add_user_message(initial_message)
 
         # Dashboard update
@@ -488,22 +541,30 @@ class Orchestrator:
         self._session.update(messages=self._context.messages)
 
         # --- Phase 4: ReAct loop ---
+        # Determine step budget based on intent
+        intent_max = max_steps_for_intent(self._intent.intent, category)
+        effective_max = min(self._config.agent.max_iterations, intent_max)
         self._cb.on_phase(
             "Solving",
-            f"Entering solve loop (max {self._config.agent.max_iterations} steps)...",
+            f"Entering solve loop (max {effective_max} steps)...",
         )
-        return self._react_loop(category)
+        return self._react_loop(category, max_iterations_override=effective_max)
 
-    def _react_loop(self, category: Category) -> SolveResult:
+    def _react_loop(
+        self,
+        category: Category,
+        max_iterations_override: int | None = None,
+    ) -> SolveResult:
         """Execute the main ReAct (Reason-Act-Observe) loop.
 
         Args:
             category: The classified challenge category.
+            max_iterations_override: Optional override for max iterations.
 
         Returns:
             SolveResult after the loop terminates.
         """
-        max_iter = self._config.agent.max_iterations
+        max_iter = max_iterations_override or self._config.agent.max_iterations
 
         while self._iteration < max_iter:
             # Check cancellation
@@ -537,6 +598,20 @@ class Orchestrator:
             pivot_level = self._pivot.check_stall(self._iteration)
             if pivot_level != PivotLevel.NONE:
                 self._handle_pivot(pivot_level)
+
+            # --- Early stop nudge for answer_question intent ---
+            if (
+                self._intent
+                and self._intent.intent == UserIntent.ANSWER_QUESTION
+                and self._iteration >= 3
+                and self._iteration % 3 == 0
+            ):
+                self._context.add_user_message(
+                    "You seem to have gathered information. If you have enough "
+                    "to answer the user's question, call answer_user now. "
+                    "Be efficient — do not keep exploring if you already know "
+                    "the answer."
+                )
 
             # --- Final attempt prompt ---
             if self._iteration == max_iter - 3:
@@ -574,6 +649,12 @@ class Orchestrator:
                 for tc in tool_calls:
                     if self._cancelled:
                         break
+
+                    # Check if this is an answer_user call
+                    func = tc.get("function", {})
+                    if func.get("name") == "answer_user":
+                        return self._handle_answer_user(tc, category)
+
                     flags = self._execute_tool_call(tc)
                     if flags:
                         return self._flag_found(flags, category)
@@ -604,17 +685,20 @@ class Orchestrator:
             self._session.save()
 
         # Exhausted iterations or cancelled
-        summary = (
-            "Cancelled by user."
-            if self._cancelled
-            else "Exhausted maximum iterations without finding the flag."
-        )
+        if self._cancelled:
+            summary = "Cancelled by user."
+        else:
+            summary = (
+                "Exhausted maximum iterations. "
+                "Here is what was discovered so far."
+            )
         self._cb.on_error(summary)
         return SolveResult(
-            success=False,
+            success=bool(self._found_flags),
             flags=self._found_flags,
             iterations=self._iteration,
             category=category.value,
+            intent=self._intent.intent.value if self._intent else "find_flag",
             summary=summary,
         )
 
@@ -749,6 +833,73 @@ class Orchestrator:
         return flags
 
     # ------------------------------------------------------------------
+    # answer_user handling
+    # ------------------------------------------------------------------
+
+    def _handle_answer_user(
+        self,
+        tool_call: dict[str, Any],
+        category: Category,
+    ) -> SolveResult:
+        """Handle the answer_user tool call and terminate the loop.
+
+        Args:
+            tool_call: The answer_user tool call dict.
+            category: Challenge category.
+
+        Returns:
+            SolveResult with the answer.
+        """
+        func = tool_call["function"]
+        tc_id = tool_call["id"]
+
+        try:
+            args = json.loads(func["arguments"])
+        except json.JSONDecodeError:
+            args = {"answer": func.get("arguments", ""), "confidence": "low"}
+
+        answer = args.get("answer", "")
+        confidence = args.get("confidence", "medium")
+        flag = args.get("flag", "") or ""
+
+        # Execute the tool so it produces output for logging
+        result = self._registry.execute("answer_user", args)
+        self._context.add_tool_result(tc_id, result.output)
+
+        self._cb.on_answer(answer, confidence, flag if flag else None)
+
+        # If a flag was provided, add it to found flags
+        if flag:
+            if flag not in self._found_flags:
+                self._found_flags.append(flag)
+                self._cb.on_flag_found(flag)
+            if self._dashboard:
+                self._dashboard.add_flag(flag)
+
+        # Session step
+        self._session.add_step(StepRecord(
+            iteration=self._iteration,
+            timestamp=time.time(),
+            event="tool_call",
+            model=self._current_model,
+            tool_name="answer_user",
+            tool_args=args,
+            tool_output=result.output[:2000],
+            flags_found=[flag] if flag else [],
+        ))
+
+        return SolveResult(
+            success=True,
+            flags=self._found_flags,
+            answer=answer,
+            answer_confidence=confidence,
+            iterations=self._iteration,
+            category=category.value,
+            intent=self._intent.intent.value if self._intent else "find_flag",
+            summary=answer,
+        )
+
+    # ------------------------------------------------------------------
     # Pivot handling
     # ------------------------------------------------------------------
 
@@ -824,12 +975,42 @@ class Orchestrator:
             flags=self._found_flags,
             iterations=self._iteration,
             category=category.value,
+            intent=self._intent.intent.value if self._intent else "find_flag",
             summary=summary,
         )
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _build_intent_context(self) -> str:
+        """Build intent-specific context for the system prompt."""
+        if self._intent is None:
+            return ""
+
+        intent = self._intent
+        lines = [f"User intent: {intent.intent.value}"]
+        if intent.specific_question:
+            lines.append(f"User wants to know: {intent.specific_question}")
+        lines.append(f"Stop criteria: {intent.stop_criteria}")
+
+        if intent.intent == UserIntent.ANSWER_QUESTION:
+            lines.append(
+                "IMPORTANT: Answer the specific question above. "
+                "Do not search for a flag unless the question IS about a flag."
+            )
+        elif intent.intent == UserIntent.ANALYZE:
+            lines.append(
+                "Provide a thorough analysis. Call answer_user with your "
+                "findings when done."
+            )
+        elif intent.intent == UserIntent.HELP_SOLVE:
+            lines.append(
+                "Provide guidance and hints. Do not solve autonomously. "
+                "Call answer_user with your recommendations."
+            )
+
+        return "\n".join(lines)
 
     def _gather_file_info(self, files: list[Path] | None) -> str:
         """Gather type information about provided challenge files.
