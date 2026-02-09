@@ -61,6 +61,14 @@ For each step:
 When you find the answer, call the answer_user tool with your complete answer.
 If you found a flag, include it in the 'flag' parameter.
 
+## Working Directory
+
+- Your working directory is ./ (the current directory).
+- All challenge files are in the current directory.
+- **Never** use absolute paths like /workspace, /tmp, or /home.
+- Use relative paths only: ./file.pcap, ./output.txt, or just file.pcap.
+- When listing files, use "." not "/workspace".
+
 ## Constraints
 
 - Do not brute-force unless you have a very small keyspace

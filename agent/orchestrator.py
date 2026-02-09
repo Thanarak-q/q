@@ -372,6 +372,7 @@ class Orchestrator:
             model_used=self._current_model,
         )
         self._session.save()
+        self._session.save_audit_log()
         return result
 
     def resume(
@@ -423,6 +424,7 @@ class Orchestrator:
             model_used=self._current_model,
         )
         self._session.save()
+        self._session.save_audit_log()
         return result
 
     # ------------------------------------------------------------------
@@ -618,9 +620,18 @@ class Orchestrator:
                 self._context.add_user_message(FINAL_ATTEMPT_PROMPT)
 
             # --- Call LLM ---
+            cost_records_before = len(self._cost.records)
             response_message = self._call_llm()
             if response_message is None:
                 continue
+
+            # Capture token/cost info from the new cost record (if any)
+            llm_tokens = 0
+            llm_cost = 0.0
+            if len(self._cost.records) > cost_records_before:
+                rec = self._cost.records[-1]
+                llm_tokens = rec.prompt_tokens + rec.completion_tokens
+                llm_cost = rec.cost_usd
 
             self._context.add_assistant_message(response_message)
 
@@ -637,6 +648,8 @@ class Orchestrator:
                     event="llm_response",
                     model=self._current_model,
                     content=text_content,
+                    tokens_used=llm_tokens,
+                    cost_usd=llm_cost,
                 ))
 
                 flags = extract_flags(text_content, self._custom_flag_pattern)
@@ -1046,6 +1059,7 @@ class Orchestrator:
             Extra context string.
         """
         parts: list[str] = []
+        parts.append(f"Working directory: {self._workspace}")
         if target_url:
             parts.append(f"Target URL: {target_url}")
         if file_info:

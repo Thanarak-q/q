@@ -195,6 +195,8 @@ class SessionManager:
         """
         sessions: list[dict[str, Any]] = []
         for fpath in sorted(self._dir.glob("*.json"), reverse=True):
+            if fpath.stem.endswith("_audit"):
+                continue
             try:
                 raw = json.loads(fpath.read_text(encoding="utf-8"))
                 sessions.append({
@@ -233,6 +235,10 @@ class SessionManager:
             f"**Flags:** {', '.join(data.flags) if data.flags else 'None found'}",
             f"**Iterations:** {data.current_iteration}",
             f"**Date:** {data.created_at}",
+            "",
+            "## Summary",
+            "",
+            self._generate_summary(data),
             "",
             "---",
             "",
@@ -282,6 +288,16 @@ class SessionManager:
                 lines.append(step.get("content", "Approach changed."))
                 lines.append("")
 
+        # Evidence section — collect significant tool outputs
+        evidence = self._collect_evidence(data)
+        if evidence:
+            lines.extend(["## Evidence", ""])
+            for i, item in enumerate(evidence, 1):
+                lines.append(
+                    f"**{i}. {item['tool']}** (step {item['iteration']})"
+                )
+                lines.append(f"\n```\n{item['output']}\n```\n")
+
         if data.flags:
             lines.extend([
                 "## Flag",
@@ -301,6 +317,116 @@ class SessionManager:
             ])
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _generate_summary(data: SessionData) -> str:
+        """Generate a 2-3 sentence summary from session data."""
+        status_text = {
+            "solved": "was successfully solved",
+            "failed": "was attempted but not solved",
+            "paused": "was paused before completion",
+            "in_progress": "is still in progress",
+        }.get(data.status, f"ended with status '{data.status}'")
+
+        cost_val = data.cost.get("total_cost_usd", 0) if data.cost else 0
+        parts = [
+            f"This {data.category or 'unknown'} challenge {status_text} "
+            f"in {data.current_iteration} iteration(s)."
+        ]
+
+        if data.flags:
+            parts.append(f"Found flag(s): {', '.join(data.flags)}.")
+
+        if cost_val > 0:
+            tokens = (
+                data.cost.get("total_prompt_tokens", 0)
+                + data.cost.get("total_completion_tokens", 0)
+            )
+            parts.append(
+                f"Total cost: ${cost_val:.4f} ({tokens:,} tokens)."
+            )
+
+        return " ".join(parts)
+
+    @staticmethod
+    def _collect_evidence(data: SessionData, max_items: int = 10) -> list[dict[str, Any]]:
+        """Collect significant non-error tool outputs as evidence artifacts."""
+        evidence: list[dict[str, Any]] = []
+        for step in data.steps:
+            if step.get("event") != "tool_call":
+                continue
+            output = step.get("tool_output", "")
+            if not output or len(output) < 20:
+                continue
+            if output.startswith("[ERROR]"):
+                continue
+            evidence.append({
+                "tool": step.get("tool_name", "unknown"),
+                "iteration": step.get("iteration", "?"),
+                "output": output[:500],
+            })
+            if len(evidence) >= max_items:
+                break
+        return evidence
+
+    def export_audit_log(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        """Export session steps as a structured audit log.
+
+        Args:
+            session_id: Session to export. Uses current if None.
+
+        Returns:
+            List of audit entry dicts with a consistent schema.
+        """
+        data = self._data
+        if session_id and (not data or data.session_id != session_id):
+            data = self.load(session_id)
+        if data is None:
+            return []
+
+        entries: list[dict[str, Any]] = []
+        for step in data.steps:
+            entries.append({
+                "timestamp": step.get("timestamp", 0),
+                "iteration": step.get("iteration", 0),
+                "event": step.get("event", ""),
+                "model": step.get("model", ""),
+                "tool": step.get("tool_name", ""),
+                "input": step.get("tool_args", {}) if step.get("tool_name") else step.get("content", "")[:500],
+                "output": step.get("tool_output", "") or step.get("content", "")[:500],
+                "tokens": step.get("tokens_used", 0),
+                "cost_usd": step.get("cost_usd", 0.0),
+            })
+        return entries
+
+    def save_audit_log(self, session_id: str | None = None) -> Path | None:
+        """Write an audit JSON file for the session.
+
+        Args:
+            session_id: Session to export. Uses current if None.
+
+        Returns:
+            Path to the audit file, or None on failure.
+        """
+        sid = session_id or (self._data.session_id if self._data else "")
+        if not sid:
+            return None
+
+        entries = self.export_audit_log(session_id)
+        if not entries:
+            return None
+
+        fpath = self._dir / f"{sid}_audit.json"
+        try:
+            fpath.write_text(
+                json.dumps(entries, indent=2, ensure_ascii=False, default=str),
+                encoding="utf-8",
+            )
+            self._log.debug(f"Audit log saved: {fpath}")
+            return fpath
+        except Exception as exc:
+            self._log.error(f"Failed to save audit log: {exc}")
+            return None
 
     @staticmethod
     def _step_to_dict(step: StepRecord) -> dict[str, Any]:

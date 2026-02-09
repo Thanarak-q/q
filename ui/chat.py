@@ -1,14 +1,15 @@
 """Interactive chat loop for ctf-agent.
 
 Provides the main REPL, input handling (single-line, multi-line),
-AgentCallbacks implementation, and session management.
+AgentCallbacks implementation with tree-structured output, and
+session management.
 """
 
 from __future__ import annotations
 
+import json
 import signal
 import sys
-import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -17,10 +18,15 @@ from agent.orchestrator import AgentCallbacks, Orchestrator, SolveResult
 from config import AppConfig, load_config
 from ui.commands import handle_command
 from ui.display import Display
-from ui.spinner import thinking_spinner, tool_spinner
+from ui.tree import (
+    NodeState,
+    TaskTree,
+    summarize_thinking,
+    summarize_tool_call,
+    summarize_tool_result,
+)
 from utils.cost_tracker import CostTracker
 from utils.logger import setup_logger
-from utils.session_manager import SessionManager
 
 
 # ------------------------------------------------------------------
@@ -52,41 +58,132 @@ class ChatState:
     # Runtime
     docker_manager: Any = None
     solving: bool = False
+    verbose: bool = False
+    sandbox_display: str = "local"
 
 
 # ------------------------------------------------------------------
-# Chat UI callback implementation
+# Chat UI callback implementation — tree-structured output
 # ------------------------------------------------------------------
 
 
 class ChatCallbacks(AgentCallbacks):
-    """Interactive chat UI callback implementation.
+    """Interactive chat UI callback — renders events as a task tree.
 
-    Renders agent events using the Display class.
+    In minimal mode (default): shows a compact tree with 1-line
+    summaries for each step.
+    In verbose mode: also shows full LLM thinking and raw tool output.
     """
 
     def __init__(self, display: Display, state: ChatState) -> None:
         self._display = display
         self._state = state
-        self._current_spinner: Any = None
+        self._tree = TaskTree(use_color=True)
+        self._current_tool_node: int | None = None
+        self._found_flag: str | None = None
+        self._found_answer: str | None = None
+        self._answer_confidence: str = ""
+        self._root_set: bool = False
+
+    # -- Lifecycle -------------------------------------------------
+
+    def reset_for_new_solve(self) -> None:
+        """Clear tree state for a new solve session."""
+        self._tree.reset()
+        self._current_tool_node = None
+        self._found_flag = None
+        self._found_answer = None
+        self._answer_confidence = ""
+        self._root_set = False
+
+    # -- Phase / structure -----------------------------------------
+
+    def on_phase(self, phase: str, detail: str) -> None:
+        if phase == "Category":
+            self._tree.set_root(f"Analyzing challenge ({detail})")
+            self._root_set = True
+        elif phase in ("Intent", "Classifying", "Planning"):
+            if self._state.verbose:
+                self._display.show_info(f"{phase}: {detail}")
+        elif phase == "Solving":
+            if self._state.verbose:
+                self._display.show_info(f"{phase}: {detail}")
+        else:
+            if self._state.verbose:
+                self._display.show_info(f"{phase}: {detail}")
+
+    # -- Thinking --------------------------------------------------
 
     def on_thinking(self, text: str) -> None:
-        self._display.show_thinking(text)
+        if not self._root_set:
+            # Planning phase — show as info in verbose, skip in minimal
+            if self._state.verbose:
+                for line in text.splitlines()[:20]:
+                    self._display.console.print(f"  [dim]{line}[/dim]")
+            return
+
+        summary = summarize_thinking(text)
+        if summary:
+            self._tree.add_completed_node(summary, success=True)
+
+        if self._state.verbose:
+            for line in text.splitlines():
+                self._display.console.print(f"│     [dim]{line}[/dim]")
+
+    # -- Tool calls ------------------------------------------------
 
     def on_tool_call(self, tool_name: str, args: dict) -> None:
-        self._display.show_tool_call(tool_name, args)
+        summary = summarize_tool_call(tool_name, args)
+        self._current_tool_node = self._tree.add_node(
+            summary, state=NodeState.RUNNING
+        )
+
+        if self._state.verbose:
+            args_str = json.dumps(args, ensure_ascii=False, indent=2)
+            for line in args_str.splitlines():
+                self._display.console.print(f"│     [dim]{line}[/dim]")
 
     def on_tool_result(self, tool_name: str, output: str, success: bool) -> None:
-        self._display.show_tool_result(output, success)
+        detail = summarize_tool_result(output)
 
-    def on_answer(self, answer: str, confidence: str, flag: str | None) -> None:
-        self._display.show_answer(answer, confidence, flag)
+        if self._current_tool_node is not None:
+            self._tree.complete_node(
+                self._current_tool_node,
+                detail=detail,
+                verbose_detail=output,
+                success=success,
+            )
+            self._current_tool_node = None
+
+        if self._state.verbose:
+            lines = output.splitlines()
+            for line in lines[:50]:
+                self._display.console.print(f"│     [dim]{line}[/dim]")
+            if len(lines) > 50:
+                self._display.console.print(
+                    f"│     [dim]... ({len(lines) - 50} more lines)[/dim]"
+                )
+
+    # -- Results ---------------------------------------------------
 
     def on_flag_found(self, flag: str) -> None:
-        self._display.show_flag(flag)
+        self._found_flag = flag
+
+    def on_answer(self, answer: str, confidence: str, flag: str | None) -> None:
+        self._found_answer = answer
+        self._answer_confidence = confidence
+        if flag:
+            self._found_flag = flag
+
+    # -- Errors ----------------------------------------------------
 
     def on_error(self, message: str) -> None:
-        self._display.show_error(message)
+        if self._root_set:
+            self._tree.add_completed_node(message, success=False)
+        else:
+            self._display.show_error(message)
+
+    # -- Status / iteration ----------------------------------------
 
     def on_status(
         self,
@@ -96,33 +193,44 @@ class ChatCallbacks(AgentCallbacks):
         cost: float,
         model: str,
     ) -> None:
-        self._display.show_status_bar(model, step, max_steps, tokens, cost)
-
-    def on_phase(self, phase: str, detail: str) -> None:
-        self._display.show_info(f"{phase}: {detail}")
-
-    def on_pivot(self, level_name: str, pivot_count: int) -> None:
-        self._display.show_pivot(level_name, pivot_count)
-
-    def on_model_change(self, old_model: str, new_model: str) -> None:
-        self._display.show_model_change(old_model, new_model)
-
-    def on_context_summary(self) -> None:
-        self._display.show_context_summary()
-
-    def on_budget_warning(self, warning: str) -> None:
-        self._display.show_budget_warning(warning)
+        if self._state.verbose:
+            self._display.show_info(
+                f"Step {step}/{max_steps} | "
+                f"Tokens: {tokens:,} | Cost: ${cost:.4f} | Model: {model}"
+            )
 
     def on_iteration(self, current: int, total: int) -> None:
-        self._display.show_iteration_header(current, total)
+        if self._state.verbose:
+            self._display.console.print(
+                f"│  [dim]--- Step {current}/{total} ---[/dim]"
+            )
+
+    # -- Pivot / model / context -----------------------------------
+
+    def on_pivot(self, level_name: str, pivot_count: int) -> None:
+        self._tree.add_completed_node(
+            f"Strategy pivot #{pivot_count}: {level_name}",
+            success=True,
+        )
+
+    def on_model_change(self, old_model: str, new_model: str) -> None:
+        self._tree.add_completed_node(
+            f"Model: {old_model} \u2192 {new_model}",
+            success=True,
+        )
+
+    def on_context_summary(self) -> None:
+        self._tree.add_completed_node("Context summarized", success=True)
+
+    def on_budget_warning(self, warning: str) -> None:
+        self._display.console.print(f"│  [warning]{warning}[/warning]")
+
+    # -- User interaction ------------------------------------------
 
     def on_ask_user(self, prompt: str) -> str:
-        """Ask the user for a hint during solving."""
-        self._display.console.print(
-            f"\n  [warning]{prompt}[/warning]"
-        )
+        self._display.console.print(f"\n  [warning]{prompt}[/warning]")
         try:
-            hint = self._display.console.input("  [bold]Your hint> [/bold]")
+            hint = self._display.console.input("  [bold]hint> [/bold]")
             return hint
         except (KeyboardInterrupt, EOFError):
             return ""
@@ -138,18 +246,12 @@ def read_input(display: Display) -> str | None:
 
     Supports:
     - Single line input
-    - Multi-line via triple quotes (\"\"\" ... \"\"\")
-    - Multi-line via backslash continuation (\\)
+    - Multi-line via triple quotes (\"\"\")
+    - Multi-line via backslash continuation (\\\\)
     - EOF (Ctrl+D) returns None
-
-    Args:
-        display: Display instance for the prompt.
-
-    Returns:
-        The user input string, or None on EOF.
     """
     try:
-        line = display.console.input("[bold]You > [/bold]")
+        line = display.console.input("[bold]> [/bold]")
     except EOFError:
         return None
     except KeyboardInterrupt:
@@ -160,7 +262,7 @@ def read_input(display: Display) -> str | None:
 
     # Multi-line mode with triple quotes
     if stripped.startswith('"""'):
-        lines = [stripped[3:]]  # content after opening """
+        lines = [stripped[3:]]
         while True:
             try:
                 next_line = display.console.input("[dim]... [/dim]")
@@ -195,31 +297,30 @@ def read_input(display: Display) -> str | None:
 # ------------------------------------------------------------------
 
 
-def setup_docker(config: AppConfig, display: Display) -> Any:
-    """Attempt to start the Docker sandbox.
+def setup_docker(config: AppConfig) -> Any:
+    """Attempt to start the Docker sandbox silently.
 
-    Args:
-        config: Application configuration.
-        display: Display for status messages.
-
-    Returns:
-        DockerSandbox instance or None.
+    Returns the DockerSandbox manager on success, None on failure.
+    Errors are logged to file only — no console output.
     """
     if config.sandbox_mode != "docker":
         return None
 
+    from utils.logger import get_logger
+
+    log = get_logger()
     try:
         from sandbox.docker_manager import DockerSandbox
 
         mgr = DockerSandbox(config=config)
         if mgr.start():
-            display.show_info("Docker sandbox ready.")
+            log.info("Docker sandbox started successfully.")
             return mgr
         else:
-            display.show_info("Docker unavailable - running tools locally.")
+            log.info("Docker unavailable — falling back to local execution.")
             return None
     except Exception as exc:
-        display.show_info(f"Docker setup failed ({exc}) - running locally.")
+        log.debug(f"Docker setup failed: {exc}")
         return None
 
 
@@ -234,20 +335,7 @@ def run_solve(
     display: Display,
     callbacks: ChatCallbacks,
 ) -> SolveResult | None:
-    """Run the solve pipeline for a challenge description.
-
-    Creates a new Orchestrator per challenge with fresh context
-    but a shared cost tracker.
-
-    Args:
-        description: Challenge description.
-        state: Current chat state.
-        display: Display renderer.
-        callbacks: Chat callbacks.
-
-    Returns:
-        SolveResult or None if interrupted.
-    """
+    """Run the solve pipeline for a challenge description."""
     # Shared cost tracker across session
     if state.session_cost_tracker is None:
         state.session_cost_tracker = CostTracker(
@@ -263,6 +351,7 @@ def run_solve(
     )
 
     state.solving = True
+    callbacks.reset_for_new_solve()
 
     # Set up Ctrl+C to cancel the agent (not exit the program)
     original_handler = signal.getsignal(signal.SIGINT)
@@ -274,7 +363,6 @@ def run_solve(
     signal.signal(signal.SIGINT, cancel_handler)
 
     try:
-        # Check for resume
         if state.resume_session_id:
             sid = state.resume_session_id
             state.resume_session_id = None
@@ -296,22 +384,36 @@ def run_solve(
     finally:
         signal.signal(signal.SIGINT, original_handler)
         state.solving = False
-        # Reset per-challenge state
         state.pending_files = []
         state.pending_url = None
         state.forced_category = None
 
     if result:
-        # Show result summary
-        display.show_solve_complete(
-            success=result.success,
-            flags=result.flags,
-            iterations=result.iterations,
-            cost=result.cost_usd,
-            tokens=result.total_tokens,
-            category=result.category,
-            session_id=result.session_id,
-        )
+        # Show result with mascot for flag/fail, plain for answers
+        if callbacks._found_flag:
+            display.show_flag_result(
+                flag=callbacks._found_flag,
+                steps=result.iterations,
+                tokens=result.total_tokens,
+                cost=result.cost_usd,
+                answer=callbacks._found_answer,
+            )
+        elif not result.success:
+            if callbacks._found_answer:
+                display.show_answer(
+                    callbacks._found_answer, callbacks._answer_confidence
+                )
+            display.show_fail_result(
+                steps=result.iterations,
+                tokens=result.total_tokens,
+                cost=result.cost_usd,
+            )
+        else:
+            if callbacks._found_answer:
+                display.show_answer(
+                    callbacks._found_answer, callbacks._answer_confidence
+                )
+            display.show_done(result.iterations, result.total_tokens, result.cost_usd)
 
         # Record in history
         state.solve_history.append({
@@ -334,14 +436,15 @@ def run_solve(
 # ------------------------------------------------------------------
 
 
-def chat_loop() -> None:
-    """Run the main interactive chat loop.
-
-    This is the entry point for the interactive mode.
-    """
+def chat_loop(verbose: bool = False) -> None:
+    """Run the main interactive chat loop."""
     # Load config
     config = load_config()
-    setup_logger(level=config.log.level, log_dir=config.log.log_dir)
+    setup_logger(
+        level=config.log.level,
+        log_dir=config.log.log_dir,
+        verbose=verbose,
+    )
 
     # Check API key
     if not config.model.api_key:
@@ -358,15 +461,20 @@ def chat_loop() -> None:
         config=config,
         current_model=config.model.default_model,
         workspace=Path.cwd(),
+        verbose=verbose,
     )
     callbacks = ChatCallbacks(display, state)
 
-    # Show banner and welcome
-    display.show_banner(state.current_model)
-    display.show_welcome()
+    # Docker setup (silent — errors go to log file only)
+    state.docker_manager = setup_docker(config)
+    state.sandbox_display = "docker" if state.docker_manager else "local"
 
-    # Docker setup
-    state.docker_manager = setup_docker(config, display)
+    # Minimal welcome banner (after docker so we show the actual mode)
+    display.show_banner(
+        model=state.current_model,
+        sandbox=state.sandbox_display,
+        workspace=str(state.workspace),
+    )
 
     # Main loop
     try:
@@ -399,7 +507,6 @@ def chat_loop() -> None:
         display.console.print()
         display.show_goodbye(state.total_session_cost, len(state.solve_history))
     finally:
-        # Cleanup Docker
         if state.docker_manager:
             try:
                 state.docker_manager.stop()

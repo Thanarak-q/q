@@ -1,134 +1,221 @@
-"""Rich display rendering for ctf-agent interactive mode.
+"""Minimal display rendering for ctf-agent interactive mode.
 
-Handles banner, thinking output, tool calls, flag celebrations,
-status bar, and all visual formatting.
+Handles the welcome box, answer/flag output, command tables, and
+session summaries.  The solve-loop rendering is handled by the
+TaskTree in ui/tree.py — this module covers everything else.
 """
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-# Theme for the interactive UI
+VERSION = "0.3.0"
+
+# Simplified theme — only the styles still needed
 CHAT_THEME = Theme(
     {
-        "thinking": "cyan",
-        "tool_call": "bold yellow",
-        "tool_args": "dim",
-        "result": "green",
         "error": "bold red",
         "flag": "bold green",
         "info": "dim white",
         "prompt": "bold white",
-        "banner": "bold cyan",
-        "status": "dim cyan",
-        "command": "bold magenta",
+        "command": "dim",
         "success": "bold green",
         "warning": "bold yellow",
-        "header": "bold white on blue",
     }
 )
 
-BANNER = r"""
-   _____ _______ ______            _____            _
-  / ____|__   __|  ____|     /\   / ____|          | |
- | |       | |  | |__       /  \ | |  __  ___ _ __ | |_
- | |       | |  |  __|     / /\ \| | |_ |/ _ \ '_ \| __|
- | |____   | |  | |       / ____ \ |__| |  __/ | | | |_
-  \_____|  |_|  |_|      /_/    \_\_____|\___|_| |_|\__|
-"""
-
-VERSION = "0.3.0"
-
 
 class Display:
-    """Handles all Rich rendering for the interactive chat UI."""
+    """Handles Rich rendering for the interactive chat UI."""
 
     def __init__(self) -> None:
         self.console = Console(theme=CHAT_THEME)
 
-    def show_banner(self, model: str) -> None:
-        """Display the startup banner with version and model info."""
-        self.console.print(Text(BANNER, style="banner"))
-        self.console.print(
-            f"  [bold]CTF Agent[/bold] v{VERSION}  |  "
-            f"Model: [cyan]{model}[/cyan]  |  "
-            f"Type [command]/help[/command] for commands\n"
-        )
+    # ------------------------------------------------------------------
+    # Welcome screen
+    # ------------------------------------------------------------------
 
-    def show_welcome(self) -> None:
-        """Display the welcome box with usage instructions."""
-        self.console.print(
-            Panel(
-                "[bold]Welcome to CTF Agent Interactive Mode[/bold]\n\n"
-                "  Describe a CTF challenge and I'll solve it for you.\n\n"
-                "  [dim]Examples:[/dim]\n"
-                '  [dim]>[/dim] This RSA challenge uses e=3 with small n\n'
-                '  [dim]>[/dim] Web login bypass at http://target:8080\n'
-                '  [dim]>[/dim] /file challenge.zip  [dim](load file first)[/dim]\n'
-                '  [dim]>[/dim] /help  [dim](see all commands)[/dim]\n\n'
-                "  [dim]Use triple quotes for multi-line input:[/dim]\n"
-                '  [dim]>[/dim] """\n'
-                "  [dim]   n = 12345...\n"
-                '     e = 3\n'
-                '     """[/dim]',
-                style="cyan",
-                title="[bold]CTF Agent[/bold]",
-                border_style="cyan",
-            )
-        )
+    # Capybara mascot visible width (constant across all expressions).
+    _CAPY_W = 16
 
-    def show_thinking(self, text: str) -> None:
-        """Display agent thinking/reasoning text."""
-        self.console.print(f"  [thinking]{text}[/thinking]")
+    def show_banner(
+        self,
+        model: str,
+        sandbox: str = "local",
+        workspace: str = "~",
+    ) -> None:
+        """Display the startup box with capybara mascot."""
+        from ui.mascot import CAPYBARA
 
-    def show_thinking_start(self) -> None:
-        """Display the thinking indicator."""
-        self.console.print("  [thinking]Thinking...[/thinking]")
+        home = str(Path.home())
+        short_ws = workspace.replace(home, "~") if home in workspace else workspace
 
-    def show_tool_call(self, tool_name: str, args: dict) -> None:
-        """Display a tool call with its arguments."""
-        import json
+        capy_lines = CAPYBARA.split("\n")
 
-        args_str = json.dumps(args, ensure_ascii=False)
-        if len(args_str) > 300:
-            args_str = args_str[:300] + "..."
-        self.console.print(f"\n  [tool_call]Tool: {tool_name}[/tool_call]")
-        self.console.print(f"  [tool_args]{args_str}[/tool_args]")
+        # Right-side info — each entry is (text, Rich style).
+        right: list[tuple[str, str]] = [
+            ("Welcome back!", "bold white"),
+            ("", ""),
+            (f"{model} \u00b7 {sandbox}", "dim"),
+            (short_ws, "dim"),
+            ("", ""),
+            ("Tips: /help", "dim"),
+        ]
 
-    def show_tool_result(self, output: str, success: bool = True) -> None:
-        """Display the result of a tool execution."""
-        if len(output) > 2000:
-            output = output[:2000] + "\n... (truncated)"
-        style = "result" if success else "error"
-        prefix = " " if success else " "
-        self.console.print(f"  [{style}]{prefix}{output}[/{style}]")
+        # Dimensions
+        gap = 4
+        right_w = max((len(t) for t, _ in right), default=0)
+        right_w = max(right_w, 16)
+        inner_w = self._CAPY_W + gap + right_w
+        box_w = inner_w + 4  # "│ " + content + " │"
 
-    def show_answer(self, answer: str, confidence: str, flag: str | None) -> None:
-        """Display the agent's answer."""
-        self.console.print(f"\n  [success]ANSWER ({confidence}):[/success] {answer}")
-        if flag:
-            self.console.print(f"  [flag]FLAG: {flag}[/flag]")
+        BOX = "rgb(45,138,78)"
 
-    def show_error(self, message: str) -> None:
-        """Display an error message."""
-        self.console.print(f"\n  [error]{message}[/error]")
+        # Header
+        title = f" q v{VERSION} "
+        dashes = max(0, box_w - 3 - len(title))
+        hdr = Text()
+        hdr.append(f"\u256d\u2500{title}{'\u2500' * dashes}\u256e", style=BOX)
+        self.console.print(hdr)
+
+        # Content lines
+        n = max(len(capy_lines), len(right))
+        for i in range(n):
+            line = Text()
+            line.append("\u2502 ", style=BOX)
+
+            # Capybara column
+            if i < len(capy_lines):
+                line.append_text(Text.from_ansi(capy_lines[i]))
+            else:
+                line.append(" " * self._CAPY_W)
+
+            line.append(" " * gap)
+
+            # Text column
+            if i < len(right):
+                txt, sty = right[i]
+                pad = right_w - len(txt)
+                if txt:
+                    line.append(txt, style=sty)
+                line.append(" " * pad)
+            else:
+                line.append(" " * right_w)
+
+            line.append(" \u2502", style=BOX)
+            self.console.print(line)
+
+        # Footer
+        ftr = Text()
+        ftr.append(f"\u2570{'\u2500' * (box_w - 2)}\u256f", style=BOX)
+        self.console.print(ftr)
+        self.console.print()
+
+    # ------------------------------------------------------------------
+    # Answer / flag / done — called after solve
+    # ------------------------------------------------------------------
+
+    def show_answer(self, answer: str, confidence: str) -> None:
+        """Display the agent's answer in bold green."""
+        self.console.print(f"\n[bold green]Answer:[/bold green] {answer}")
+        if confidence and confidence != "high":
+            self.console.print(f"[dim](confidence: {confidence})[/dim]")
 
     def show_flag(self, flag: str) -> None:
-        """Display a found flag with celebration."""
-        self.console.print()
+        """Display a found flag — single line, no panel."""
+        self.console.print(f"[bold green]\U0001f6a9 Flag: {flag}[/bold green]")
+
+    def show_done(self, steps: int, tokens: int, cost: float) -> None:
+        """Display the final summary line."""
+        tokens_str = f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
         self.console.print(
-            Panel(
-                f"[flag]FLAG FOUND: {flag}[/flag]",
-                style="bold green",
-                title="[bold green]Captured![/bold green]",
-                border_style="green",
-            )
+            f"[dim]Done ({steps} steps \u00b7 {tokens_str} tokens \u00b7 ${cost:.2f})[/dim]"
         )
+
+    # ------------------------------------------------------------------
+    # Mascot result displays — capybara + result side by side
+    # ------------------------------------------------------------------
+
+    def _mascot_side_by_side(
+        self,
+        mascot: str,
+        info: list[tuple[str, str]],
+    ) -> None:
+        """Print mascot art and info lines side by side."""
+        capy_lines = mascot.split("\n")
+        gap = 3
+        n = max(len(capy_lines), len(info))
+
+        self.console.print()
+        for i in range(n):
+            line = Text()
+            line.append(" ")
+            if i < len(capy_lines):
+                line.append_text(Text.from_ansi(capy_lines[i]))
+            else:
+                line.append(" " * self._CAPY_W)
+            line.append(" " * gap)
+            if i < len(info):
+                txt, sty = info[i]
+                if txt:
+                    line.append(txt, style=sty)
+            self.console.print(line)
+        self.console.print()
+
+    def show_flag_result(
+        self,
+        flag: str,
+        steps: int,
+        tokens: int,
+        cost: float,
+        answer: str | None = None,
+        confidence: str = "",
+    ) -> None:
+        """Display flag found with happy capybara."""
+        from ui.mascot import CAPYBARA_HAPPY
+
+        tokens_str = f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
+        info: list[tuple[str, str]] = [
+            ("", ""),
+            (f"\U0001f6a9 Flag: {flag}", "bold green"),
+        ]
+        if answer:
+            info.append((answer, "green"))
+        info.append(("", ""))
+        info.append(
+            (f"Done ({steps} steps \u00b7 {tokens_str} tokens \u00b7 ${cost:.2f})", "dim")
+        )
+        # Pad to capybara height (6 lines)
+        while len(info) < 6:
+            info.append(("", ""))
+
+        self._mascot_side_by_side(CAPYBARA_HAPPY, info)
+
+    def show_fail_result(
+        self,
+        steps: int,
+        tokens: int,
+        cost: float,
+    ) -> None:
+        """Display solve failure with sad capybara."""
+        from ui.mascot import CAPYBARA_SAD
+
+        tokens_str = f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
+        info: list[tuple[str, str]] = [
+            ("", ""),
+            ("\u2717 Could not find flag", "bold red"),
+            ("", ""),
+            (f"Done ({steps} steps \u00b7 {tokens_str} tokens \u00b7 ${cost:.2f})", "dim"),
+            ("Try /hint or rephrase", "dim"),
+            ("", ""),
+        ]
+        self._mascot_side_by_side(CAPYBARA_SAD, info)
 
     def show_solve_complete(
         self,
@@ -140,114 +227,72 @@ class Display:
         category: str,
         session_id: str,
     ) -> None:
-        """Display the solve result summary."""
-        if success:
-            self.console.print(
-                Panel(
-                    f"[flag]Flags: {', '.join(flags)}[/flag]\n"
-                    f"Category: {category}  |  Steps: {iterations}\n"
-                    f"Cost: ${cost:.4f}  |  Tokens: {tokens:,}\n"
-                    f"Session: {session_id}",
-                    title="[bold green]Challenge Solved![/bold green]",
-                    style="green",
-                    border_style="green",
-                )
-            )
-        else:
-            self.console.print(
-                Panel(
-                    f"Could not find the flag after {iterations} steps.\n"
-                    f"Category: {category}  |  Cost: ${cost:.4f}\n"
-                    f"Session: {session_id}",
-                    title="[bold red]Solve Failed[/bold red]",
-                    style="red",
-                    border_style="red",
-                )
-            )
-        self.console.print()
+        """Compatibility wrapper — delegates to show_done."""
+        self.show_done(iterations, tokens, cost)
 
-    def show_status_bar(
-        self,
-        model: str,
-        step: int,
-        max_steps: int,
-        tokens: int,
-        cost: float,
-    ) -> None:
-        """Display the status bar at the bottom."""
-        tokens_str = f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
-        self.console.print(
-            f"  [status]Model: {model}  |  "
-            f"Steps: {step}/{max_steps}  |  "
-            f"Tokens: {tokens_str}  |  "
-            f"Cost: ${cost:.4f}[/status]"
-        )
+    # ------------------------------------------------------------------
+    # Errors and info — used during solve and by commands
+    # ------------------------------------------------------------------
+
+    def show_error(self, message: str) -> None:
+        """Display an error message."""
+        self.console.print(f"[error]{message}[/error]")
 
     def show_info(self, message: str) -> None:
         """Display an informational message."""
-        self.console.print(f"  [info]{message}[/info]")
+        self.console.print(f"[info]{message}[/info]")
 
     def show_pivot(self, level_name: str, pivot_count: int) -> None:
         """Display a strategy pivot notification."""
         self.console.print(
-            f"\n  [warning]Strategy Pivot #{pivot_count}: "
-            f"{level_name}[/warning]"
+            f"[warning]Strategy pivot #{pivot_count}: {level_name}[/warning]"
         )
 
     def show_model_change(self, old_model: str, new_model: str) -> None:
         """Display model change notification."""
-        self.console.print(
-            f"  [info]Model: {old_model} -> {new_model}[/info]"
-        )
-
-    def show_iteration_header(self, current: int, total: int) -> None:
-        """Display the iteration separator."""
-        self.console.rule(
-            f"[bold]Step {current}/{total}[/bold]", style="dim"
-        )
+        self.console.print(f"[info]Model: {old_model} \u2192 {new_model}[/info]")
 
     def show_context_summary(self) -> None:
         """Display context summarization notice."""
-        self.console.print("  [info]Context summarized to free space.[/info]")
+        self.console.print("[info]Context summarized to free space.[/info]")
 
     def show_budget_warning(self, warning: str) -> None:
         """Display budget warning."""
-        self.console.print(f"  [warning]{warning}[/warning]")
+        self.console.print(f"[warning]{warning}[/warning]")
 
-    def show_cost_summary(self, cost_data: dict) -> None:
-        """Display cost breakdown table."""
-        table = Table(title="Cost Summary")
-        table.add_column("Model", style="cyan")
-        table.add_column("Calls", justify="right")
-        table.add_column("Input Tokens", justify="right")
-        table.add_column("Output Tokens", justify="right")
-        table.add_column("Cost", justify="right", style="green")
+    # ------------------------------------------------------------------
+    # Command displays — help, config, history, sessions, cost
+    # ------------------------------------------------------------------
 
-        per_model = cost_data.get("per_model", {})
-        for model_name, stats in per_model.items():
-            table.add_row(
-                model_name,
-                str(stats.get("calls", 0)),
-                f"{stats.get('prompt_tokens', 0):,}",
-                f"{stats.get('completion_tokens', 0):,}",
-                f"${stats.get('cost_usd', 0):.4f}",
-            )
+    def show_help(self, commands: dict[str, str]) -> None:
+        """Display help with all available commands."""
+        table = Table(show_header=False)
+        table.add_column("Command", style="command", min_width=20)
+        table.add_column("Description")
 
-        table.add_section()
-        table.add_row(
-            "[bold]Total[/bold]",
-            str(cost_data.get("call_count", 0)),
-            f"{cost_data.get('total_prompt_tokens', 0):,}",
-            f"{cost_data.get('total_completion_tokens', 0):,}",
-            f"[bold]${cost_data.get('total_cost_usd', 0):.4f}[/bold]",
+        for cmd, desc in commands.items():
+            table.add_row(cmd, desc)
+
+        self.console.print(table)
+        self.console.print(
+            "\n[dim]Or just type a challenge description to start solving.[/dim]\n"
         )
+
+    def show_config(self, config_data: dict) -> None:
+        """Display current configuration."""
+        table = Table(title="Configuration")
+        table.add_column("Setting", style="dim")
+        table.add_column("Value")
+
+        for key, val in config_data.items():
+            table.add_row(key, str(val))
 
         self.console.print(table)
 
     def show_history(self, results: list[dict]) -> None:
         """Display solve history for this session."""
         if not results:
-            self.console.print("  [info]No challenges solved yet.[/info]")
+            self.console.print("[info]No challenges solved yet.[/info]")
             return
 
         table = Table(title="Session History")
@@ -274,25 +319,44 @@ class Display:
 
         self.console.print(table)
 
-    def show_config(self, config_data: dict) -> None:
-        """Display current configuration."""
-        table = Table(title="Current Configuration")
-        table.add_column("Setting", style="cyan")
-        table.add_column("Value")
+    def show_cost_summary(self, cost_data: dict) -> None:
+        """Display cost breakdown table."""
+        table = Table(title="Cost Summary")
+        table.add_column("Model", style="dim")
+        table.add_column("Calls", justify="right")
+        table.add_column("Input Tokens", justify="right")
+        table.add_column("Output Tokens", justify="right")
+        table.add_column("Cost", justify="right", style="green")
 
-        for key, val in config_data.items():
-            table.add_row(key, str(val))
+        per_model = cost_data.get("per_model", {})
+        for model_name, stats in per_model.items():
+            table.add_row(
+                model_name,
+                str(stats.get("calls", 0)),
+                f"{stats.get('prompt_tokens', 0):,}",
+                f"{stats.get('completion_tokens', 0):,}",
+                f"${stats.get('cost_usd', 0):.4f}",
+            )
+
+        table.add_section()
+        table.add_row(
+            "[bold]Total[/bold]",
+            str(cost_data.get("call_count", 0)),
+            f"{cost_data.get('total_prompt_tokens', 0):,}",
+            f"{cost_data.get('total_completion_tokens', 0):,}",
+            f"[bold]${cost_data.get('total_cost_usd', 0):.4f}[/bold]",
+        )
 
         self.console.print(table)
 
     def show_sessions_list(self, sessions: list[dict]) -> None:
         """Display saved sessions list."""
         if not sessions:
-            self.console.print("  [info]No saved sessions found.[/info]")
+            self.console.print("[info]No saved sessions found.[/info]")
             return
 
         table = Table(title="Saved Sessions")
-        table.add_column("Session ID", style="cyan")
+        table.add_column("Session ID", style="dim")
         table.add_column("Status")
         table.add_column("Category")
         table.add_column("Description", max_width=40)
@@ -313,33 +377,17 @@ class Display:
 
         self.console.print(table)
 
-    def show_help(self, commands: dict[str, str]) -> None:
-        """Display help with all available commands."""
-        table = Table(title="Available Commands", show_header=False)
-        table.add_column("Command", style="command", min_width=20)
-        table.add_column("Description")
+    # ------------------------------------------------------------------
+    # Goodbye / clear
+    # ------------------------------------------------------------------
 
-        for cmd, desc in commands.items():
-            table.add_row(cmd, desc)
-
-        self.console.print(table)
+    def show_goodbye(self, total_cost: float, challenges_solved: int) -> None:
+        """Display exit summary — single line."""
         self.console.print(
-            "\n  [dim]Or just type a challenge description to start solving.[/dim]\n"
+            f"\n[dim]Session: {challenges_solved} challenges \u00b7 "
+            f"${total_cost:.4f} total. Goodbye![/dim]\n"
         )
 
     def clear(self) -> None:
         """Clear the screen."""
         self.console.clear()
-
-    def show_goodbye(self, total_cost: float, challenges_solved: int) -> None:
-        """Display exit summary."""
-        self.console.print(
-            Panel(
-                f"Challenges solved: {challenges_solved}\n"
-                f"Total session cost: ${total_cost:.4f}\n\n"
-                "[dim]Goodbye![/dim]",
-                title="[bold]Session Summary[/bold]",
-                style="cyan",
-                border_style="cyan",
-            )
-        )

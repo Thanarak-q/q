@@ -9,6 +9,7 @@ Usage:
     python main.py --batch FILE # Batch mode
     python main.py --sessions   # List sessions
     python main.py --replay ID  # Replay a session
+    python main.py --resume ID  # Resume a paused/failed session
     python main.py --writeup ID # Export writeup
     python main.py --build      # Build Docker sandbox
     python main.py --tools      # List available tools
@@ -26,8 +27,9 @@ from typing import Optional
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 from rich.theme import Theme
+
+from ui.display import VERSION
 
 # Minimal theme for non-interactive commands
 _THEME = Theme(
@@ -43,17 +45,6 @@ _THEME = Theme(
 )
 _console = Console(theme=_THEME)
 
-BANNER = r"""
-   _____ _______ ______            _____            _
-  / ____|__   __|  ____|     /\   / ____|          | |
- | |       | |  | |__       /  \ | |  __  ___ _ __ | |_
- | |       | |  |  __|     / /\ \| | |_ |/ _ \ '_ \| __|
- | |____   | |  | |       / ____ \ |__| |  __/ | | | |_
-  \_____|  |_|  |_|      /_/    \_\_____|\___|_| |_|\__|
-"""
-
-VERSION = "0.3.0"
-
 
 # ------------------------------------------------------------------
 # Batch mode
@@ -65,8 +56,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
     from config import load_config
     from utils.logger import setup_logger
 
-    _console.print(Text(BANNER, style="bold cyan"))
-    _console.print(Panel("Batch Mode", style="bold"))
+    _console.print(f"[bold]q v{VERSION}[/bold] — Batch Mode\n")
 
     config = load_config()
     setup_logger(level=config.log.level, log_dir=config.log.log_dir)
@@ -307,6 +297,86 @@ def cmd_replay(args: argparse.Namespace) -> None:
 
 
 # ------------------------------------------------------------------
+# Resume
+# ------------------------------------------------------------------
+
+
+def cmd_resume(args: argparse.Namespace) -> None:
+    """Resume a paused or failed session from the CLI."""
+    from config import load_config
+    from utils.logger import setup_logger
+    from utils.session_manager import SessionManager
+
+    config = load_config()
+    setup_logger(level=config.log.level, log_dir=config.log.log_dir)
+
+    mgr = SessionManager(session_dir=config.log.session_dir)
+    data = mgr.load(args.resume)
+
+    if data is None:
+        _console.print(f"[error]Session {args.resume} not found.[/error]")
+        sys.exit(1)
+
+    if data.status == "solved":
+        _console.print(
+            f"[info]Session {args.resume} is already solved. "
+            f"Flags: {', '.join(data.flags)}[/info]"
+        )
+        sys.exit(0)
+
+    _console.print(Panel(
+        f"[bold]{data.description[:120]}[/bold]\n\n"
+        f"Category: {data.category}  |  Status: {data.status}\n"
+        f"Iterations: {data.current_iteration}  |  "
+        f"Flags: {', '.join(data.flags) if data.flags else 'None'}",
+        title=f"Resuming: {args.resume}",
+        style="cyan",
+    ))
+
+    docker_mgr = _setup_docker(config) if not args.no_docker else None
+
+    try:
+        from agent.orchestrator import Orchestrator
+
+        orch = Orchestrator(
+            config=config,
+            docker_manager=docker_mgr,
+            workspace=Path.cwd(),
+            session_manager=mgr,
+        )
+
+        result = orch.resume(session_id=args.resume)
+
+        _console.print()
+        if result.success and result.flags:
+            _console.print(Panel(
+                f"[flag]FLAGS: {', '.join(result.flags)}[/flag]",
+                title="Result",
+                style="bold green",
+            ))
+        elif result.answer:
+            _console.print(Panel(
+                f"[bold]{result.answer}[/bold]",
+                title=f"Answer ({result.answer_confidence})",
+                style="green",
+            ))
+        else:
+            _console.print(Panel(
+                f"[bold red]{result.summary or 'No flags found.'}[/bold red]",
+                title="Result",
+                style="red",
+            ))
+
+        _console.print(
+            f"\nIterations: {result.iterations}  |  "
+            f"Cost: ${result.cost_usd:.4f}"
+        )
+    finally:
+        if docker_mgr:
+            docker_mgr.stop()
+
+
+# ------------------------------------------------------------------
 # Writeup
 # ------------------------------------------------------------------
 
@@ -437,6 +507,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replay a saved session step by step.",
     )
     group.add_argument(
+        "--resume",
+        metavar="ID",
+        help="Resume a paused or failed session.",
+    )
+    group.add_argument(
         "--writeup",
         metavar="ID",
         help="Export a session as a Markdown writeup.",
@@ -477,6 +552,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output file path for writeup.",
     )
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Enable verbose output (full LLM thinking and tool output).",
+    )
 
     return parser
 
@@ -498,6 +580,8 @@ def main() -> None:
         cmd_sessions(args)
     elif args.replay:
         cmd_replay(args)
+    elif args.resume:
+        cmd_resume(args)
     elif args.writeup:
         cmd_writeup(args)
     elif args.build:
@@ -508,7 +592,7 @@ def main() -> None:
         # Default: interactive chat mode
         from ui.chat import chat_loop
 
-        chat_loop()
+        chat_loop(verbose=args.verbose)
 
 
 if __name__ == "__main__":

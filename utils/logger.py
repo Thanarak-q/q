@@ -34,35 +34,44 @@ console = Console(theme=CTF_THEME)
 _logger: Optional[logging.Logger] = None
 
 
-def setup_logger(level: str = "INFO", log_dir: Optional[Path] = None) -> logging.Logger:
+_rich_handler: Optional[RichHandler] = None
+
+
+def setup_logger(
+    level: str = "INFO",
+    log_dir: Optional[Path] = None,
+    verbose: bool = False,
+) -> logging.Logger:
     """Initialise and return the application logger.
 
     Args:
         level: Logging level name (DEBUG, INFO, WARNING, ERROR).
         log_dir: Directory for file-based log output. Created if absent.
+        verbose: If False, suppress console log output (file logging
+            continues at DEBUG).  If True, show all logs on console.
 
     Returns:
         Configured logging.Logger instance.
     """
-    global _logger
+    global _logger, _rich_handler
     if _logger is not None:
         return _logger
 
     _logger = logging.getLogger("ctf-agent")
-    _logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    _logger.setLevel(logging.DEBUG)
 
-    # Rich console handler
-    rich_handler = RichHandler(
+    # Rich console handler — silent by default, verbose shows everything
+    _rich_handler = RichHandler(
         console=console,
         show_time=True,
         show_path=False,
         markup=True,
         rich_tracebacks=True,
     )
-    rich_handler.setLevel(logging.DEBUG)
-    _logger.addHandler(rich_handler)
+    _rich_handler.setLevel(logging.DEBUG if verbose else logging.CRITICAL)
+    _logger.addHandler(_rich_handler)
 
-    # File handler
+    # File handler — always captures everything
     if log_dir:
         log_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -73,6 +82,17 @@ def setup_logger(level: str = "INFO", log_dir: Optional[Path] = None) -> logging
         _logger.addHandler(fh)
 
     return _logger
+
+
+def set_console_verbose(verbose: bool) -> None:
+    """Toggle console log verbosity at runtime.
+
+    Args:
+        verbose: True to show all logs on console, False to suppress.
+    """
+    global _rich_handler
+    if _rich_handler is not None:
+        _rich_handler.setLevel(logging.DEBUG if verbose else logging.CRITICAL)
 
 
 def get_logger() -> logging.Logger:

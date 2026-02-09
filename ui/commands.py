@@ -28,6 +28,8 @@ COMMAND_HELP: dict[str, str] = {
     "/save": "Save current session",
     "/load <id>": "Load a saved session",
     "/sessions": "List all saved sessions",
+    "/report [file]": "Generate Markdown report (print or save to file)",
+    "/verbose [on|off]": "Toggle verbose mode (full thinking + tool output)",
     "/exit, /quit": "Exit with session summary",
 }
 
@@ -72,6 +74,8 @@ def handle_command(
         "/save": _cmd_save,
         "/load": _cmd_load,
         "/sessions": _cmd_sessions,
+        "/report": _cmd_report,
+        "/verbose": _cmd_verbose,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -248,7 +252,11 @@ def _cmd_history(arg: str, state: ChatState, display: Display) -> bool:
 
 def _cmd_clear(arg: str, state: ChatState, display: Display) -> bool:
     display.clear()
-    display.show_banner(state.current_model)
+    display.show_banner(
+        model=state.current_model,
+        sandbox=state.sandbox_display,
+        workspace=str(state.workspace),
+    )
     display.show_info("Screen cleared. Context reset for next challenge.")
     # Reset pending state
     state.pending_files = []
@@ -307,6 +315,45 @@ def _cmd_sessions(arg: str, state: ChatState, display: Display) -> bool:
     mgr = SessionManager(session_dir=state.config.log.session_dir)
     sessions = mgr.list_sessions()
     display.show_sessions_list(sessions)
+    return False
+
+
+def _cmd_report(arg: str, state: ChatState, display: Display) -> bool:
+    if not state.last_session_id:
+        display.show_info("No active session. Solve a challenge first.")
+        return False
+
+    from utils.session_manager import SessionManager
+
+    mgr = SessionManager(session_dir=state.config.log.session_dir)
+    md = mgr.export_writeup(session_id=state.last_session_id)
+
+    if arg:
+        try:
+            Path(arg).write_text(md, encoding="utf-8")
+            display.show_info(f"Report saved to {arg}")
+        except Exception as exc:
+            display.show_error(f"Failed to save report: {exc}")
+    else:
+        display.console.print(md)
+
+    return False
+
+
+def _cmd_verbose(arg: str, state: ChatState, display: Display) -> bool:
+    from utils.logger import set_console_verbose
+
+    if arg.lower() in ("on", "true", "1"):
+        state.verbose = True
+    elif arg.lower() in ("off", "false", "0"):
+        state.verbose = False
+    else:
+        # Toggle
+        state.verbose = not state.verbose
+
+    set_console_verbose(state.verbose)
+    status = "ON" if state.verbose else "OFF"
+    display.show_info(f"Verbose mode: {status}")
     return False
 
 
