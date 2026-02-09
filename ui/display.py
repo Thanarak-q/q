@@ -62,7 +62,7 @@ class Display:
         right: list[tuple[str, str]] = [
             ("Welcome back!", "bold white"),
             ("", ""),
-            (f"{model} \u00b7 {sandbox}", "dim"),
+            ("q is a green capybara CTF solving", "dim"),
             (short_ws, "dim"),
             ("", ""),
             ("Tips: /help", "dim"),

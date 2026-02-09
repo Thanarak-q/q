@@ -1,14 +1,15 @@
-# ctf-agent
+# q
 
-AI-powered CTF challenge solver that works as a CLI tool. Uses OpenAI's
-function calling with a ReAct (Reason-Act-Observe) loop to autonomously
-solve Capture The Flag challenges across all major categories.
+Your friendly AI-powered CTF companion  — an interactive terminal agent that solves
+Capture The Flag challenges through conversation. Features a ReAct reasoning loop,
+50+ security tools in a Docker sandbox, and a cute capybara mascot cheering you on.
 
 ## Features
 
 ### Core
 
 - **Automatic classification** — detects challenge category (web, pwn, crypto, reverse, forensics, misc) using fast model
+- **User intent classification** — intelligently classifies user messages to determine when to stop, continue, or provide answers
 - **Expert-level playbooks** — deep, pro-level strategies for each category with real-world techniques
 - **ReAct agent loop** — iterative reason-act-observe cycle with tool dispatch
 - **Docker sandbox** — isolated execution with 50+ pre-installed CTF tools (sqlmap, gobuster, john, steghide, angr, z3, pwntools, etc.)
@@ -16,12 +17,14 @@ solve Capture The Flag challenges across all major categories.
 
 ### Advanced
 
+- **Task tree UI** — real-time progress visualization with hierarchical task tracking and status indicators
+- **Answer with confidence** — `answer_user` tool displays solutions with confidence scores and optional flags
 - **Graduated pivot system** — 6-level escalation when stuck: basic pivot -> step back -> approach swap -> reclassify -> model escalation -> ask user for hint
 - **Multi-model strategy** — 3-tier model system: fast (gpt-4o-mini) for classification/planning, default (gpt-4o) for solving, reasoning (o3) for hard problems
-- **Session persistence** — save/load/resume sessions as JSON; auto-saves every iteration
+- **Session persistence** — save/load/resume sessions as JSON; auto-saves every iteration with resume functionality
 - **Batch mode** — solve multiple challenges from a JSON file with summary report
 - **Cost tracking** — per-call token counting, per-model breakdown, budget limits with warnings
-- **Rich live dashboard** — optional 4-panel real-time display (challenge info, agent thinking, tool outputs, progress stats)
+- **Rich interactive UI** — beautiful terminal interface with tool call visualization and live status display
 - **Replay & writeup** — replay any session step by step; export as Markdown writeup
 
 ## Quick Start
@@ -173,7 +176,18 @@ python main.py list-tools
 User Input
     |
     v
-Classifier (fast model) --> Category (web/pwn/crypto/rev/forensics/misc)
+┌─────────────────────────────────────────────────────────────┐
+│  UI Layer (Rich Terminal)                                   │
+│  ├── Task Tree UI (progress visualization)                  │
+│  ├── Chat Interface (interactive input/output)              │
+│  └── Display Components (tool calls, status, mascot)        │
+└─────────────────────────────────────────────────────────────┘
+    |
+    v
+Intent Classifier --> Determine: solve / question / continue / stop
+    |
+    v
+Category Classifier (fast model) --> web/pwn/crypto/rev/forensics/misc
     |
     v
 Planner (fast model) --> Attack Plan
@@ -187,11 +201,12 @@ ReAct Loop:
          ^                                                 |
          |_________________________________________________|
          |
+    answer_user?   --> Display answer with confidence + flag
     Flag Found?    --> Done (save session, report cost)
     Budget Limit?  --> Stop
     Stalled?       --> Graduated Pivot (6 levels)
     Near Limit?    --> Summarize Context
-    Each Iteration --> Save session + update dashboard
+    Each Iteration --> Save session + update task tree
 ```
 
 ### Pivot Escalation Levels
@@ -221,6 +236,8 @@ ReAct Loop:
 | `python_exec` | Run Python scripts (pwntools, crypto, angr, z3, data processing) |
 | `file_manager` | Read/write/list files, detect file types via magic bytes |
 | `network` | HTTP requests (GET/POST) and raw TCP socket connections |
+| `answer_user` | Provide answers with confidence scores and optional flags |
+| `capybara_generator` | Generate capybara ASCII art for fun 🦫 |
 
 ## Category Playbooks
 
@@ -252,7 +269,7 @@ All settings via environment variables or `.env` file:
 | `TOOL_TIMEOUT_PYTHON` | `60` | Python script timeout (seconds) |
 | `TOOL_TIMEOUT_NETWORK` | `30` | Network request timeout (seconds) |
 | `SANDBOX_MODE` | `docker` | Execution mode (`docker` or `local`) |
-| `DOCKER_IMAGE` | `ctf-agent-sandbox` | Docker image name |
+| `DOCKER_IMAGE` | `q-sandbox` | Docker image name |
 | `DOCKER_MEM` | `512m` | Container memory limit |
 | `DOCKER_CPU_QUOTA` | `50000` | Container CPU quota |
 | `LOG_LEVEL` | `INFO` | Logging level |
@@ -262,14 +279,14 @@ All settings via environment variables or `.env` file:
 ## Project Structure
 
 ```
-ctf-agent/
+q/
 ├── main.py                       # CLI entry point (solve, batch, replay, writeup, sessions)
 ├── config.py                     # Configuration + model pricing
 ├── .env.example                  # Environment variable template
 ├── requirements.txt              # Python dependencies
 ├── agent/
 │   ├── orchestrator.py           # Main ReAct loop + all feature integration
-│   ├── classifier.py             # Challenge category classifier (fast model)
+│   ├── classifier.py             # Challenge category + user intent classifier
 │   ├── planner.py                # Attack planner + PivotManager + model selection
 │   └── context_manager.py        # Message history + auto-summarization
 ├── tools/
@@ -278,7 +295,16 @@ ctf-agent/
 │   ├── python_exec.py            # Python code execution
 │   ├── file_manager.py           # File read/write/list operations
 │   ├── network.py                # HTTP + TCP networking
+│   ├── answer_user.py            # Answer tool with confidence scoring
+│   ├── capybara_generator.py     # Capybara ASCII art generator
 │   └── registry.py               # Tool registry + dispatch
+├── ui/
+│   ├── tree.py                   # Task tree UI for progress visualization
+│   ├── display.py                # Rich display components + formatting
+│   ├── chat.py                   # Interactive chat interface
+│   ├── commands.py               # CLI command handlers
+│   ├── spinner.py                # Loading spinner animations
+│   └── mascot.py                 # Capybara mascot display
 ├── prompts/
 │   ├── system.py                 # System prompt builder
 │   ├── strategies.py             # Graduated pivot prompts (6 levels)
@@ -302,7 +328,7 @@ ctf-agent/
     └── token_counter.py          # Token counting (tiktoken)
 ```
 
-**Total: 34 source files, ~7,000+ lines of code.**
+**Total: 40+ source files across 6 modules.**
 
 ## Requirements
 
