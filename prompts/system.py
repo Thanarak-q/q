@@ -61,13 +61,17 @@ For each step:
 When you find the answer, call the answer_user tool with your complete answer.
 If you found a flag, include it in the 'flag' parameter.
 
-## Working Directory
+## ENVIRONMENT RULES
 
-- Your working directory is ./ (the current directory).
+- Your working directory is the current directory (./).
 - All challenge files are in the current directory.
-- **Never** use absolute paths like /workspace, /tmp, or /home.
-- Use relative paths only: ./file.pcap, ./output.txt, or just file.pcap.
-- When listing files, use "." not "/workspace".
+- NEVER use absolute paths like /workspace, /tmp, /home, or /root.
+- ALWAYS use relative paths: ./file.pcap or just file.pcap.
+- To list files: ls -la (not ls /workspace).
+- To read files: cat ./file.txt (not cat /workspace/file.txt).
+- To write output: write to ./output.txt (not /tmp/output.txt).
+- If a tool returns a "path traversal" or "permission denied" error,
+  switch to a relative path immediately.
 
 ## Constraints
 

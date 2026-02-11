@@ -311,15 +311,28 @@ def cmd_resume(args: argparse.Namespace) -> None:
     setup_logger(level=config.log.level, log_dir=config.log.log_dir)
 
     mgr = SessionManager(session_dir=config.log.session_dir)
-    data = mgr.load(args.resume)
+
+    # Support --resume latest
+    resume_id = args.resume
+    if resume_id == "latest":
+        sid = mgr.find_latest(status_filter="paused")
+        if not sid:
+            sid = mgr.find_latest(status_filter="failed")
+        if not sid:
+            _console.print("[error]No paused or failed sessions to resume.[/error]")
+            sys.exit(1)
+        resume_id = sid
+        _console.print(f"[info]Resuming latest session: {resume_id}[/info]")
+
+    data = mgr.load(resume_id)
 
     if data is None:
-        _console.print(f"[error]Session {args.resume} not found.[/error]")
+        _console.print(f"[error]Session {resume_id} not found.[/error]")
         sys.exit(1)
 
     if data.status == "solved":
         _console.print(
-            f"[info]Session {args.resume} is already solved. "
+            f"[info]Session {resume_id} is already solved. "
             f"Flags: {', '.join(data.flags)}[/info]"
         )
         sys.exit(0)
@@ -329,7 +342,7 @@ def cmd_resume(args: argparse.Namespace) -> None:
         f"Category: {data.category}  |  Status: {data.status}\n"
         f"Iterations: {data.current_iteration}  |  "
         f"Flags: {', '.join(data.flags) if data.flags else 'None'}",
-        title=f"Resuming: {args.resume}",
+        title=f"Resuming: {resume_id}",
         style="cyan",
     ))
 
@@ -345,7 +358,7 @@ def cmd_resume(args: argparse.Namespace) -> None:
             session_manager=mgr,
         )
 
-        result = orch.resume(session_id=args.resume)
+        result = orch.resume(session_id=resume_id)
 
         _console.print()
         if result.success and result.flags:
@@ -559,6 +572,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Enable verbose output (full LLM thinking and tool output).",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["auto", "single", "multi"],
+        default=None,
+        help="Pipeline mode: auto (default), single (legacy), multi (multi-agent).",
+    )
 
     return parser
 
@@ -592,7 +611,7 @@ def main() -> None:
         # Default: interactive chat mode
         from ui.chat import chat_loop
 
-        chat_loop(verbose=args.verbose)
+        chat_loop(verbose=args.verbose, mode=args.mode)
 
 
 if __name__ == "__main__":

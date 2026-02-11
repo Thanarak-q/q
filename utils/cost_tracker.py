@@ -6,6 +6,7 @@ cost estimates, and warns when approaching budget limits.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -37,6 +38,7 @@ class CostTracker:
     _total_prompt: int = 0
     _total_completion: int = 0
     _total_cost: float = 0.0
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def record(
         self,
@@ -45,6 +47,8 @@ class CostTracker:
         iteration: int = 0,
     ) -> APICallRecord:
         """Record token usage from an API response.
+
+        Thread-safe for parallel solver execution.
 
         Args:
             model: Model identifier that was called.
@@ -66,11 +70,12 @@ class CostTracker:
             cost_usd=cost,
             iteration=iteration,
         )
-        self.records.append(rec)
 
-        self._total_prompt += prompt_tok
-        self._total_completion += compl_tok
-        self._total_cost += cost
+        with self._lock:
+            self.records.append(rec)
+            self._total_prompt += prompt_tok
+            self._total_completion += compl_tok
+            self._total_cost += cost
 
         return rec
 

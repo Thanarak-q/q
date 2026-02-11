@@ -68,6 +68,19 @@ class LogConfig:
 
 
 @dataclass(frozen=True)
+class PipelineConfig:
+    """Multi-agent pipeline configuration."""
+
+    mode: str = os.getenv("PIPELINE_MODE", "auto")  # auto|single|multi
+    max_parallel_solvers: int = int(os.getenv("MAX_PARALLEL_SOLVERS", "3"))
+    recon_max_steps: int = int(os.getenv("RECON_MAX_STEPS", "8"))
+    analyst_max_steps: int = int(os.getenv("ANALYST_MAX_STEPS", "10"))
+    solver_max_steps: int = int(os.getenv("SOLVER_MAX_STEPS", "15"))
+    reporter_max_steps: int = int(os.getenv("REPORTER_MAX_STEPS", "3"))
+    fast_path_enabled: bool = os.getenv("FAST_PATH_ENABLED", "true").lower() == "true"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Top-level application configuration aggregating all sub-configs."""
 
@@ -76,6 +89,7 @@ class AppConfig:
     tool: ToolConfig = field(default_factory=ToolConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)
     log: LogConfig = field(default_factory=LogConfig)
+    pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     sandbox_mode: str = os.getenv("SANDBOX_MODE", "docker")
 
 

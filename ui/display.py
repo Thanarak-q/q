@@ -15,7 +15,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # Simplified theme — only the styles still needed
 CHAT_THEME = Theme(

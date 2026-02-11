@@ -28,8 +28,11 @@ COMMAND_HELP: dict[str, str] = {
     "/save": "Save current session",
     "/load <id>": "Load a saved session",
     "/sessions": "List all saved sessions",
-    "/report [file]": "Generate Markdown report (print or save to file)",
+    "/report [list|id]": "Show latest report, list all, or show by session ID",
+    "/resume [id|latest]": "Resume a paused session",
+    "/audit [id]": "Show audit log (current or by session ID)",
     "/verbose [on|off]": "Toggle verbose mode (full thinking + tool output)",
+    "/mode [auto|single|multi]": "Show or set pipeline mode",
     "/exit, /quit": "Exit with session summary",
 }
 
@@ -75,7 +78,10 @@ def handle_command(
         "/load": _cmd_load,
         "/sessions": _cmd_sessions,
         "/report": _cmd_report,
+        "/resume": _cmd_resume,
+        "/audit": _cmd_audit,
         "/verbose": _cmd_verbose,
+        "/mode": _cmd_mode,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -132,6 +138,7 @@ def _cmd_model(arg: str, state: ChatState, display: Display) -> bool:
         tool=state.config.tool,
         docker=state.config.docker,
         log=state.config.log,
+        pipeline=state.config.pipeline,
         sandbox_mode=state.config.sandbox_mode,
     )
     display.show_model_change(old, model)
@@ -319,24 +326,129 @@ def _cmd_sessions(arg: str, state: ChatState, display: Display) -> bool:
 
 
 def _cmd_report(arg: str, state: ChatState, display: Display) -> bool:
+    from pathlib import Path as P
+
+    report_dir = P("reports")
+
+    if arg == "list":
+        # List all reports
+        if not report_dir.exists():
+            display.show_info("No reports found.")
+            return False
+        reports = sorted(report_dir.glob("*.md"), reverse=True)
+        if not reports:
+            display.show_info("No reports found.")
+            return False
+        display.console.print("\n  [bold]Reports:[/bold]")
+        for rp in reports[:20]:
+            display.console.print(f"    [dim]{rp.name}[/dim]")
+        display.console.print()
+        return False
+
+    if arg and arg != "list":
+        # Show report by session ID
+        fpath = report_dir / f"{arg}.md"
+        if not fpath.exists():
+            # Try as filename directly
+            fpath = report_dir / arg
+        if not fpath.exists():
+            display.show_error(f"Report not found: {arg}")
+            return False
+        display.console.print(fpath.read_text(encoding="utf-8"))
+        return False
+
+    # No arg — show latest report
     if not state.last_session_id:
         display.show_info("No active session. Solve a challenge first.")
         return False
 
+    fpath = report_dir / f"{state.last_session_id}.md"
+    if fpath.exists():
+        display.console.print(fpath.read_text(encoding="utf-8"))
+    else:
+        # Fall back to generating from session data
+        from utils.session_manager import SessionManager
+
+        mgr = SessionManager(session_dir=state.config.log.session_dir)
+        md = mgr.export_writeup(session_id=state.last_session_id)
+        display.console.print(md)
+
+    return False
+
+
+def _cmd_resume(arg: str, state: ChatState, display: Display) -> bool:
     from utils.session_manager import SessionManager
 
     mgr = SessionManager(session_dir=state.config.log.session_dir)
-    md = mgr.export_writeup(session_id=state.last_session_id)
 
-    if arg:
-        try:
-            Path(arg).write_text(md, encoding="utf-8")
-            display.show_info(f"Report saved to {arg}")
-        except Exception as exc:
-            display.show_error(f"Failed to save report: {exc}")
+    if not arg or arg == "latest":
+        # Find latest resumable session
+        sid = mgr.find_latest(status_filter="paused")
+        if not sid:
+            sid = mgr.find_latest(status_filter="failed")
+        if not sid:
+            display.show_info("No paused or failed sessions to resume.")
+            return False
     else:
-        display.console.print(md)
+        sid = arg.strip()
 
+    data = mgr.load(sid)
+    if data is None:
+        display.show_error(f"Session not found: {sid}")
+        return False
+
+    if data.status == "solved":
+        display.show_info(
+            f"Session {sid} is already solved. "
+            f"Flags: {', '.join(data.flags) if data.flags else 'None'}"
+        )
+        return False
+
+    display.console.print(
+        f"\n  [bold]Resuming: {data.session_id}[/bold]\n"
+        f"  Status: {data.status}  |  Category: {data.category}\n"
+        f"  Step: {data.current_iteration}\n"
+        f"  Description: {data.description[:80]}\n"
+    )
+    state.resume_session_id = sid
+    display.show_info("Type anything to start solving from where you left off.")
+    return False
+
+
+def _cmd_audit(arg: str, state: ChatState, display: Display) -> bool:
+    from utils.audit_log import read_audit_log, summarize_audit_log, export_audit_csv
+
+    # Parse subcommands: /audit, /audit <id>, /audit export <id>
+    parts = arg.split() if arg else []
+
+    if parts and parts[0] == "export":
+        sid = parts[1] if len(parts) > 1 else state.last_session_id
+        if not sid:
+            display.show_error("No session ID. Usage: /audit export <session_id>")
+            return False
+        entries = read_audit_log(sid, session_dir=state.config.log.session_dir)
+        if not entries:
+            display.show_info(f"No audit log for session {sid}.")
+            return False
+        csv_path = Path("reports") / f"{sid}_audit.csv"
+        export_audit_csv(entries, csv_path)
+        display.show_info(f"Audit exported to {csv_path}")
+        return False
+
+    sid = parts[0] if parts else state.last_session_id
+    if not sid:
+        display.show_info("No active session. Usage: /audit <session_id>")
+        return False
+
+    entries = read_audit_log(sid, session_dir=state.config.log.session_dir)
+    if not entries:
+        display.show_info(f"No audit log for session {sid}.")
+        return False
+
+    summary = summarize_audit_log(entries)
+    display.console.print(f"\n[bold]Audit Log: {sid}[/bold]\n")
+    display.console.print(summary)
+    display.console.print()
     return False
 
 
@@ -354,6 +466,31 @@ def _cmd_verbose(arg: str, state: ChatState, display: Display) -> bool:
     set_console_verbose(state.verbose)
     status = "ON" if state.verbose else "OFF"
     display.show_info(f"Verbose mode: {status}")
+    return False
+
+
+VALID_MODES = {"auto", "single", "multi"}
+
+
+def _cmd_mode(arg: str, state: ChatState, display: Display) -> bool:
+    if not arg:
+        display.console.print(
+            f"\n  Pipeline mode: [cyan]{state.pipeline_mode}[/cyan]\n"
+            f"  [dim]auto  = multi-agent pipeline (default)[/dim]\n"
+            f"  [dim]single = classic single-agent mode[/dim]\n"
+            f"  [dim]multi  = always use multi-agent pipeline[/dim]\n"
+        )
+        return False
+
+    mode = arg.strip().lower()
+    if mode not in VALID_MODES:
+        display.show_error(
+            f"Unknown mode '{mode}'. Valid: {', '.join(sorted(VALID_MODES))}"
+        )
+        return False
+
+    state.pipeline_mode = mode
+    display.show_info(f"Pipeline mode: {mode}")
     return False
 
 

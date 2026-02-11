@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -39,7 +39,9 @@ from agent.planner import (
 from config import AppConfig, load_config
 from prompts.strategies import FINAL_ATTEMPT_PROMPT
 from prompts.system import build_system_prompt
+from report.generator import generate_report, save_report
 from tools.registry import ToolRegistry
+from utils.audit_log import AuditLogger
 from utils.cost_tracker import CostTracker
 from utils.dashboard import Dashboard
 from utils.flag_extractor import extract_flags
@@ -118,12 +120,36 @@ class AgentCallbacks(ABC):
     def on_iteration(self, current: int, total: int) -> None:
         """Called at the start of each iteration."""
 
+    def on_report_saved(self, path: str) -> None:
+        """Called when a solve report is saved to disk."""
+
     def on_ask_user(self, prompt: str) -> str:
         """Called when the agent needs a hint from the user.
 
         Default implementation reads from console.
         """
         return console.input("[bold]Your hint> [/bold]")
+
+    # -- Multi-agent pipeline callbacks (non-abstract, default no-op) --
+
+    def on_agent_start(self, agent_role: str, model: str) -> None:
+        """Called when a pipeline agent begins its work."""
+
+    def on_agent_done(self, agent_role: str, summary: str, success: bool) -> None:
+        """Called when a pipeline agent completes."""
+
+    def on_pipeline_phase(
+        self, phase: str, detail: str, is_fast_path: bool = False
+    ) -> None:
+        """Called for pipeline phase transitions."""
+
+    def on_parallel_start(self, count: int) -> None:
+        """Called when parallel solvers are launched."""
+
+    def on_parallel_result(
+        self, index: int, success: bool, summary: str
+    ) -> None:
+        """Called when a parallel solver finishes."""
 
 
 class NullCallbacks(AgentCallbacks):
@@ -183,6 +209,9 @@ class NullCallbacks(AgentCallbacks):
     def on_iteration(self, current: int, total: int) -> None:
         console.rule(f"[step]Iteration {current}/{total}[/step]")
 
+    def on_report_saved(self, path: str) -> None:
+        console.print(f"[result]Report saved: {path}[/result]")
+
 
 # ------------------------------------------------------------------
 # SolveResult
@@ -230,6 +259,7 @@ class Orchestrator:
         enable_dashboard: bool = False,
         callbacks: AgentCallbacks | None = None,
         cost_tracker: CostTracker | None = None,
+        mode: str | None = None,
     ) -> None:
         """Initialise the orchestrator.
 
@@ -242,10 +272,12 @@ class Orchestrator:
             enable_dashboard: If True and no dashboard given, create one.
             callbacks: Optional UI callback handler.
             cost_tracker: Optional shared cost tracker (for session accumulation).
+            mode: Pipeline mode override ('auto', 'single', 'multi').
         """
         self._config = config or load_config()
         self._client = OpenAI(api_key=self._config.model.api_key)
         self._workspace = workspace or Path.cwd()
+        self._docker = docker_manager
         self._registry = ToolRegistry(
             docker_manager=docker_manager,
             workspace=self._workspace,
@@ -257,6 +289,8 @@ class Orchestrator:
         self._custom_flag_pattern: str | None = None
         self._cancelled = False
         self._intent: IntentResult | None = None
+        self._start_time: float = 0.0
+        self._audit: AuditLogger | None = None
 
         # Callbacks (use NullCallbacks for backward compat)
         self._cb: AgentCallbacks = callbacks or NullCallbacks()
@@ -280,6 +314,9 @@ class Orchestrator:
             self._dashboard = Dashboard()
         else:
             self._dashboard = None
+
+        # Pipeline mode
+        self._mode = mode or self._config.pipeline.mode
 
     @property
     def cost_tracker(self) -> CostTracker:
@@ -329,6 +366,7 @@ class Orchestrator:
         """
         self._custom_flag_pattern = flag_pattern
         self._cancelled = False
+        self._start_time = time.time()
 
         # Create session
         sid = self._session.new_session(
@@ -338,14 +376,32 @@ class Orchestrator:
             flag_pattern=flag_pattern or "",
         )
 
+        # Create audit logger
+        self._audit = AuditLogger(
+            session_id=sid,
+            session_dir=self._config.log.session_dir,
+        )
+        self._audit.log_session_start(
+            challenge=description,
+            files=[str(f) for f in files] if files else [],
+            target_url=target_url or "",
+        )
+
         # Start dashboard
         if self._dashboard:
             self._dashboard.start()
 
         try:
-            result = self._run_pipeline(
-                description, files, target_url, flag_pattern, forced_category
-            )
+            if self._mode in ("multi", "auto"):
+                result = self._run_multi_pipeline(
+                    description, files, target_url, flag_pattern,
+                    forced_category, sid,
+                )
+            else:
+                result = self._run_pipeline(
+                    description, files, target_url, flag_pattern,
+                    forced_category,
+                )
         except KeyboardInterrupt:
             self._cb.on_error("Interrupted by user.")
             self._session.update(status="paused")
@@ -362,17 +418,31 @@ class Orchestrator:
                 self._dashboard.stop()
 
         # Finalise session
+        final_status = "solved" if result.success else "failed"
         result.session_id = sid
         result.cost_usd = self._cost.total_cost
         result.total_tokens = self._cost.total_tokens
         self._session.update(
-            status="solved" if result.success else "failed",
+            status=final_status,
             flags=result.flags,
             cost=self._cost.to_dict(),
             model_used=self._current_model,
         )
         self._session.save()
-        self._session.save_audit_log()
+
+        # Audit: session end
+        if self._audit:
+            self._audit.log_session_end(
+                status=final_status,
+                total_steps=result.iterations,
+                total_tokens=self._cost.total_tokens,
+                total_cost=self._cost.total_cost,
+            )
+            self._audit.close()
+
+        # Generate and save report
+        self._generate_and_save_report(result)
+
         return result
 
     def resume(
@@ -398,6 +468,14 @@ class Orchestrator:
         self._iteration = data.current_iteration
         self._found_flags = list(data.flags)
         self._cancelled = False
+        self._start_time = time.time()
+
+        # Create audit logger (append to existing)
+        self._audit = AuditLogger(
+            session_id=session_id,
+            session_dir=self._config.log.session_dir,
+        )
+        self._audit.log("session_resume", iteration=self._iteration)
 
         # Restore messages
         self._context._messages = list(data.messages)  # noqa: SLF001
@@ -417,18 +495,78 @@ class Orchestrator:
         result.cost_usd = self._cost.total_cost
         result.total_tokens = self._cost.total_tokens
 
+        final_status = "solved" if result.success else "failed"
         self._session.update(
-            status="solved" if result.success else "failed",
+            status=final_status,
             flags=result.flags,
             cost=self._cost.to_dict(),
             model_used=self._current_model,
         )
         self._session.save()
-        self._session.save_audit_log()
+
+        # Audit: session end
+        if self._audit:
+            self._audit.log_session_end(
+                status=final_status,
+                total_steps=result.iterations,
+                total_tokens=self._cost.total_tokens,
+                total_cost=self._cost.total_cost,
+            )
+            self._audit.close()
+
+        # Generate and save report
+        self._generate_and_save_report(result)
+
         return result
 
     # ------------------------------------------------------------------
-    # Internal pipeline
+    # Multi-agent pipeline (new)
+    # ------------------------------------------------------------------
+
+    def _run_multi_pipeline(
+        self,
+        description: str,
+        files: list[Path] | None,
+        target_url: str | None,
+        flag_pattern: str | None,
+        forced_category: str | None,
+        session_id: str,
+    ) -> SolveResult:
+        """Delegate to the multi-agent Pipeline.
+
+        Args:
+            description: Challenge description.
+            files: Challenge files.
+            target_url: Target URL.
+            flag_pattern: Custom flag regex.
+            forced_category: Optional forced category.
+            session_id: Current session ID.
+
+        Returns:
+            SolveResult from the pipeline.
+        """
+        from agent.pipeline import Pipeline
+
+        pipeline = Pipeline(
+            config=self._config,
+            docker_manager=self._docker,
+            workspace=self._workspace,
+            callbacks=self._cb,
+            cost_tracker=self._cost,
+            session_manager=self._session,
+            audit=self._audit,
+        )
+        pipeline._state.session_id = session_id
+        return pipeline.run(
+            description=description,
+            files=files,
+            target_url=target_url,
+            flag_pattern=flag_pattern,
+            forced_category=forced_category,
+        )
+
+    # ------------------------------------------------------------------
+    # Internal pipeline (single-agent, legacy)
     # ------------------------------------------------------------------
 
     def _run_pipeline(
@@ -478,6 +616,11 @@ class Orchestrator:
 
         self._session.update(category=category.value)
 
+        # Audit: classify
+        if self._audit:
+            intent_str = self._intent.intent.value if self._intent else "find_flag"
+            self._audit.log_classify(category=category.value, intent=intent_str)
+
         # --- Phase 2: Planning ---
         self._cb.on_phase("Planning", "Creating attack plan...")
         playbook = get_playbook(category)
@@ -486,6 +629,10 @@ class Orchestrator:
         )
         self._cb.on_thinking(plan)
         self._session.update(plan=plan)
+
+        # Audit: plan
+        if self._audit:
+            self._audit.log_plan(model=self._config.model.fast_model, plan=plan)
 
         # Select initial model
         self._current_model = select_model_for_task(
@@ -809,10 +956,29 @@ class Orchestrator:
 
         self._cb.on_tool_call(name, args)
 
+        # Audit: tool call
+        if self._audit:
+            self._audit.log_tool_call(
+                step=self._iteration, tool=name, args=args,
+            )
+
         result = self._registry.execute(name, args)
 
         output = result.output if result.success else f"[ERROR] {result.error}"
         self._cb.on_tool_result(name, output, result.success)
+
+        # Audit: tool result
+        if self._audit:
+            if result.success:
+                self._audit.log_tool_result(
+                    step=self._iteration, tool=name,
+                    success=True, output_length=len(result.output),
+                )
+            else:
+                self._audit.log_tool_error(
+                    step=self._iteration, tool=name,
+                    error=result.error or output[:300],
+                )
 
         if result.success:
             self._pivot.record_progress(self._iteration)
@@ -881,6 +1047,10 @@ class Orchestrator:
 
         self._cb.on_answer(answer, confidence, flag if flag else None)
 
+        # Audit: answer
+        if self._audit:
+            self._audit.log_answer(answer=answer, confidence=confidence, flag=flag)
+
         # If a flag was provided, add it to found flags
         if flag:
             if flag not in self._found_flags:
@@ -924,6 +1094,10 @@ class Orchestrator:
         """
         self._cb.on_pivot(level.name, self._pivot.pivot_count)
 
+        # Audit: pivot
+        if self._audit:
+            self._audit.log_pivot(level=level.name, pivot_count=self._pivot.pivot_count)
+
         prompt = self._pivot.get_pivot_prompt(level)
         self._context.add_user_message(prompt)
 
@@ -942,6 +1116,9 @@ class Orchestrator:
                 Category.MISC, self._config, is_escalated=True
             )
             self._cb.on_model_change(old_model, self._current_model)
+            # Audit: model switch
+            if self._audit:
+                self._audit.log_model_switch(old_model, self._current_model)
 
         # Ask-user level
         if level == PivotLevel.ASK_USER:
@@ -978,6 +1155,9 @@ class Orchestrator:
             if f not in self._found_flags:
                 self._found_flags.append(f)
                 self._cb.on_flag_found(f)
+                # Audit: flag found
+                if self._audit:
+                    self._audit.log_flag_found(f)
 
         if self._dashboard:
             for f in flags:
@@ -991,6 +1171,31 @@ class Orchestrator:
             intent=self._intent.intent.value if self._intent else "find_flag",
             summary=summary,
         )
+
+    # ------------------------------------------------------------------
+    # Report generation
+    # ------------------------------------------------------------------
+
+    def _generate_and_save_report(self, result: SolveResult) -> None:
+        """Generate a Markdown report and save it to ./reports/."""
+        try:
+            session_data = self._session.get_session_data()
+            if session_data is None:
+                return
+
+            duration = time.time() - self._start_time if self._start_time else 0.0
+            report_md = generate_report(
+                session_data=asdict(session_data),
+                cost_data=self._cost.to_dict(),
+                duration_s=duration,
+            )
+            report_path = save_report(
+                report_md=report_md,
+                session_id=result.session_id,
+            )
+            self._cb.on_report_saved(str(report_path))
+        except Exception as exc:
+            self._log.debug(f"Report generation failed: {exc}")
 
     # ------------------------------------------------------------------
     # Helpers
