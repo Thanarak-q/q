@@ -1,30 +1,30 @@
 # q
 
-Your friendly AI-powered CTF companion  — an interactive terminal agent that solves
-Capture The Flag challenges through conversation. Features a ReAct reasoning loop,
-50+ security tools in a Docker sandbox, and a cute capybara mascot cheering you on.
+**The Autonomous CTF Operative.**
+
+`q` is an elite multi-agent system designed to dismantle Capture The Flag challenges through coordinated AI warfare. Orchestrating a specialized team of **Recon**, **Analyst**, **Solver**, and **Reporter** agents, it leverages advanced ReAct reasoning and a military-grade Docker arsenal to detect, exploit, and document vulnerabilities in real-time.
+
+All while a supportive Capybara mascot ensures your morale never drops below 100%.
 
 ## Features
 
 ### Core
 
-- **Automatic classification** — detects challenge category (web, pwn, crypto, reverse, forensics, misc) using fast model
-- **User intent classification** — intelligently classifies user messages to determine when to stop, continue, or provide answers
-- **Expert-level playbooks** — deep, pro-level strategies for each category with real-world techniques
-- **ReAct agent loop** — iterative reason-act-observe cycle with tool dispatch
+- **Multi-Agent Pipeline** — specialized agents for Recon, Analysis, Solving, and Reporting working in concert
+- **Parallel Solving** — concurrently test multiple hypotheses to speed up solving
+- **Automatic classification** — detects challenge category (web, pwn, crypto, reverse, forensics, misc)
+- **User intent classification** — intelligently determines when to stop, continue, or answer questions
 - **Docker sandbox** — isolated execution with 50+ pre-installed CTF tools (sqlmap, gobuster, john, steghide, angr, z3, pwntools, etc.)
-- **Context management** — automatic summarization when approaching token limits
 
 ### Advanced
 
-- **Task tree UI** — real-time progress visualization with hierarchical task tracking and status indicators
-- **Answer with confidence** — `answer_user` tool displays solutions with confidence scores and optional flags
-- **Graduated pivot system** — 6-level escalation when stuck: basic pivot -> step back -> approach swap -> reclassify -> model escalation -> ask user for hint
-- **Multi-model strategy** — 3-tier model system: fast (gpt-4o-mini) for classification/planning, default (gpt-4o) for solving, reasoning (o3) for hard problems
-- **Session persistence** — save/load/resume sessions as JSON; auto-saves every iteration with resume functionality
+- **Comprehensive Reporting** — auto-generates professional Markdown reports with evidence and steps
+- **Task tree UI** — real-time progress visualization with hierarchical task tracking
+- **Answer with confidence** — `answer_user` tool displays solutions with confidence scores
+- **Multi-model strategy** — optimized usage of fast (gpt-4o-mini), default (gpt-4o), and reasoning (o3) models across agents
+- **Session persistence** — save/load/resume sessions as JSON; auto-saves every iteration
 - **Batch mode** — solve multiple challenges from a JSON file with summary report
-- **Cost tracking** — per-call token counting, per-model breakdown, budget limits with warnings
-- **Rich interactive UI** — beautiful terminal interface with tool call visualization and live status display
+- **Cost tracking** — detailed per-call token counting and budget limits
 - **Replay & writeup** — replay any session step by step; export as Markdown writeup
 
 ## Quick Start
@@ -176,57 +176,43 @@ python main.py list-tools
 User Input
     |
     v
-┌─────────────────────────────────────────────────────────────┐
-│  UI Layer (Rich Terminal)                                   │
-│  ├── Task Tree UI (progress visualization)                  │
-│  ├── Chat Interface (interactive input/output)              │
-│  └── Display Components (tool calls, status, mascot)        │
-└─────────────────────────────────────────────────────────────┘
+Orchestrator (Route: Auto/Multi/Single)
     |
     v
-Intent Classifier --> Determine: solve / question / continue / stop
+[Multi-Agent Pipeline]
     |
-    v
-Category Classifier (fast model) --> web/pwn/crypto/rev/forensics/misc
+    +---> 1. Classification (Intent + Category) [Fast Model]
     |
-    v
-Planner (fast model) --> Attack Plan
+    +---> 2. Recon Agent [Fast Model]
+    |       (Quick information gathering & difficulty assessment)
     |
-    v
-Model Selector --> Pick model based on category + escalation
+    +---> 3. Analyst Agent [Default Model] (Optional - skipped if Easy)
+    |       (Deep analysis & hypothesis generation)
     |
-    v
-ReAct Loop:
-    LLM (think) --> Tool Call --> Execute in Sandbox --> Observe
-         ^                                                 |
-         |_________________________________________________|
-         |
-    answer_user?   --> Display answer with confidence + flag
-    Flag Found?    --> Done (save session, report cost)
-    Budget Limit?  --> Stop
-    Stalled?       --> Graduated Pivot (6 levels)
-    Near Limit?    --> Summarize Context
-    Each Iteration --> Save session + update task tree
+    +---> 4. Solver Agent(s) [Default/Reasoning Model]
+    |       (Parallel execution of hypotheses)
+    |
+    +---> 5. Reporter Agent [Fast Model]
+            (Generates structured Markdown report)
 ```
 
-### Pivot Escalation Levels
+### Multi-Agent Interaction
 
-| Level | Name | Action |
-|-------|------|--------|
-| 1 | `BASIC_PIVOT` | Try different approach within same category |
-| 2 | `STEP_BACK` | Full re-evaluation from scratch |
-| 3 | `APPROACH_SWAP` | Switch static<->dynamic, manual<->automated |
-| 4 | `RECLASSIFY` | Reconsider challenge category entirely |
-| 5 | `MODEL_ESCALATION` | Upgrade to reasoning model (o3) |
-| 6 | `ASK_USER` | Request hint from user |
+The pipeline coordinates specialized agents, each with a distinct role:
 
-### Multi-Model Strategy
+1.  **Recon Agent**: Quickly lists files, detects types, and runs basic checks (strings, checksec).
+2.  **Analyst Agent**: Reviews recon data to formulate ranked hypotheses.
+3.  **Solver Agent**: Executes the ReAct loop to solve the challenge. **Runs in parallel** if multiple valid hypotheses are found.
+4.  **Reporter Agent**: Compiles all findings into a clean `report.md`.
 
-| Tier | Model | Used For |
-|------|-------|----------|
-| Fast | `gpt-4o-mini` | Classification, planning |
-| Default | `gpt-4o` | Main solving loop |
-| Reasoning | `o3` | Escalated hard problems |
+### Model Strategy
+
+| Agent/Task | Model | Role |
+|------------|-------|------|
+| Classify/Recon | `gpt-4o-mini` | Speed & low cost |
+| Analyst | `gpt-4o` | Reasoning & planning |
+| Solver | `gpt-4o` / `o3` | Execution (escalates to `o3` for Hard tasks) |
+| Reporter | `gpt-4o-mini` | Summarization |
 
 ## Tools
 
@@ -257,21 +243,15 @@ All settings via environment variables or `.env` file:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPENAI_API_KEY` | *(required)* | OpenAI API key |
-| `FAST_MODEL` | `gpt-4o-mini` | Fast model for classification/planning |
-| `DEFAULT_MODEL` | `gpt-4o` | Default model for solving |
-| `REASONING_MODEL` | `o3` | Reasoning model for escalation |
-| `MAX_ITERATIONS` | `30` | Max agent loop iterations |
-| `STALL_THRESHOLD` | `5` | Iterations before pivot triggers |
-| `CONTEXT_LIMIT_PERCENT` | `80` | Context usage % before summarization |
-| `TOOL_OUTPUT_MAX_CHARS` | `4000` | Truncate tool output at this length |
+| `FAST_MODEL` | `gpt-4o-mini` | Fast model for classification/recon/report |
+| `DEFAULT_MODEL` | `gpt-4o` | Default model for analyst/solver |
+| `REASONING_MODEL` | `o3` | Reasoning model for hard challenges |
+| `MAX_PARALLEL_SOLVERS` | `3` | Max concurrent solver agents |
+| `PIPELINE_MODE` | `auto` | Pipeline mode (`auto`, `multi`, `single`) |
+| `FAST_PATH_ENABLED` | `true` | Skip analyst for easy challenges |
+| `MAX_ITERATIONS` | `30` | Max total iterations (per agent roughly) |
 | `MAX_COST_PER_CHALLENGE` | `2.00` | Budget limit per challenge (USD) |
-| `TOOL_TIMEOUT_SHELL` | `30` | Shell command timeout (seconds) |
-| `TOOL_TIMEOUT_PYTHON` | `60` | Python script timeout (seconds) |
-| `TOOL_TIMEOUT_NETWORK` | `30` | Network request timeout (seconds) |
 | `SANDBOX_MODE` | `docker` | Execution mode (`docker` or `local`) |
-| `DOCKER_IMAGE` | `q-sandbox` | Docker image name |
-| `DOCKER_MEM` | `512m` | Container memory limit |
-| `DOCKER_CPU_QUOTA` | `50000` | Container CPU quota |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `LOG_DIR` | `logs` | Log file directory |
 | `SESSION_DIR` | `sessions` | Session file directory |
@@ -285,10 +265,15 @@ q/
 ├── .env.example                  # Environment variable template
 ├── requirements.txt              # Python dependencies
 ├── agent/
-│   ├── orchestrator.py           # Main ReAct loop + all feature integration
-│   ├── classifier.py             # Challenge category + user intent classifier
-│   ├── planner.py                # Attack planner + PivotManager + model selection
-│   └── context_manager.py        # Message history + auto-summarization
+│   ├── orchestrator.py           # Main ReAct loop + feature integration
+│   ├── pipeline.py               # Multi-agent pipeline coordinator
+│   ├── base_agent.py             # Abstract base agent
+│   ├── agents/                   # Specialized agents (recon, analyst, solver, reporter)
+│   ├── classifier.py             # Intent & category classification
+│   ├── planner.py                # Attack planner + model selection
+│   └── context_manager.py        # Context window management
+├── report/
+│   └── generator.py              # Markdown report generator
 ├── tools/
 │   ├── base.py                   # BaseTool ABC + ToolResult + OpenAI schema gen
 │   ├── shell.py                  # Shell command execution
