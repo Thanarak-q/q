@@ -10,13 +10,18 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tools.evidence_tracker import EvidenceTracker
 
 
 def generate_report(
     session_data: dict[str, Any],
     cost_data: dict[str, Any] | None = None,
     duration_s: float = 0.0,
+    evidence_tracker: EvidenceTracker | None = None,
+    answer: str = "",
 ) -> str:
     """Generate a Markdown solve report from session data.
 
@@ -152,6 +157,47 @@ def generate_report(
             lines.append(output[:800])
             lines.append("```")
             lines.append("")
+
+    # Evidence Chain (anti-hallucination verification)
+    if evidence_tracker is not None:
+        from tools.evidence_tracker import extract_claims as _extract
+
+        answer_text = answer or ""
+        if not answer_text:
+            # Try to extract from steps
+            for step in reversed(steps):
+                if step.get("tool_name") == "answer_user":
+                    args = step.get("tool_args", {})
+                    answer_text = args.get("answer", "")
+                    break
+
+        if answer_text:
+            claims = _extract(answer_text)
+            if claims:
+                chain = evidence_tracker.build_evidence_chain(claims)
+                lines.append("## Evidence Chain")
+                lines.append("")
+
+                verified_count = sum(1 for c in chain if c["verified"])
+                unverified_count = len(chain) - verified_count
+
+                for item in chain:
+                    icon = "\u2705" if item["verified"] else "\u26a0\ufe0f"
+                    lines.append(
+                        f"- {icon} `{item['claim']}` \u2014 Source: {item['source']}"
+                    )
+
+                lines.append("")
+                if unverified_count:
+                    lines.append(
+                        f"\u26a0\ufe0f **WARNING**: {unverified_count} claim(s) "
+                        f"could not be traced to tool output."
+                    )
+                else:
+                    lines.append(
+                        f"\u2705 All {verified_count} claim(s) verified against tool output."
+                    )
+                lines.append("")
 
     # Statistics
     lines.append("## Statistics")

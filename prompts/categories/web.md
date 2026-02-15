@@ -289,6 +289,21 @@ results don't match what a real browser would see.
 
 ---
 
+## White-Box Mode (when source code is available)
+
+If code analysis results are provided in the system prompt:
+1. Focus on the SPECIFIC files and lines mentioned
+2. Craft payloads targeting the EXACT vulnerability pattern found
+3. Don't waste time on generic scanning — you already know where to look
+4. Read the vulnerable source file first to understand the exact logic
+
+Priority order:
+- critical findings first (SQLi, command injection, auth bypass, deserialization)
+- then high findings (XSS, SSRF, path traversal)
+- skip info/low findings unless nothing else works
+
+---
+
 ## CRITICAL RULES FOR AGENT
 
 1. **Recon first** — identify stack before attacking

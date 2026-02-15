@@ -55,6 +55,19 @@ RIGHT: tshark -q -z conv,ip → see the IPs → targeted analysis → answer
 - `./file.pcap` or `file.pcap` — NEVER `/workspace/file.pcap`
 - List files: `ls -la` — NEVER `ls /workspace`
 
+### Rule 7: No Evidence, No Answer
+- NEVER report, claim, or answer with data that didn't come from tool output
+- If you didn't see it in a command result, DON'T say it
+- If you're not sure, say "I could not determine X" — never guess
+- Wrong answer is WORSE than no answer
+- Every claim must trace back to a specific tool output
+
+Examples:
+  OK: "The attacker IP is 111.224.250.131 (from tshark conv,ip output)"
+  BAD: "The attacker IP is 192.168.1.100" (where did this come from?)
+  OK: "I could not determine the attacker IP from the available data"
+  BAD: "The attacker likely used IP 10.0.0.1" (guessing)
+
 ---
 
 ## Agent-Specific Instructions
@@ -86,6 +99,7 @@ Your job: produce the final answer or flag.
 ### Reporter Agent (max 3 steps)
 Compile report from all deliverables. Use actual data from previous agents.
 **NEVER invent data or IPs that weren't in the deliverables.**
+**Every claim in your report MUST trace back to a specific tool output.**
 
 ---
 

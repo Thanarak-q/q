@@ -62,6 +62,9 @@ class ChatState:
     verbose: bool = False
     sandbox_display: str = "local"
 
+    # White-box analysis
+    repo_path: str | None = None
+
 
 # ------------------------------------------------------------------
 # Chat UI callback implementation — tree-structured output
@@ -407,6 +410,7 @@ def run_solve(
         workspace=state.workspace,
         callbacks=callbacks,
         cost_tracker=state.session_cost_tracker,
+        repo_path=state.repo_path,
     )
 
     state.solving = True
@@ -507,11 +511,12 @@ def run_solve(
 # ------------------------------------------------------------------
 
 
-def chat_loop(verbose: bool = False) -> None:
+def chat_loop(verbose: bool = False, repo_path: str | None = None) -> None:
     """Run the main interactive chat loop.
 
     Args:
         verbose: Enable verbose output.
+        repo_path: Optional path to source code for white-box analysis.
     """
     # Load config
     config = load_config()
@@ -537,6 +542,7 @@ def chat_loop(verbose: bool = False) -> None:
         current_model=config.model.default_model,
         workspace=Path.cwd(),
         verbose=verbose,
+        repo_path=repo_path,
     )
     callbacks = ChatCallbacks(display, state)
 

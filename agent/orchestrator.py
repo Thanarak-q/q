@@ -37,6 +37,8 @@ from config import AppConfig, load_config
 from prompts.strategies import FINAL_ATTEMPT_PROMPT
 from prompts.system import build_system_prompt
 from report.generator import generate_report, save_report
+from tools.code_analyzer import CodeAnalyzer
+from tools.evidence_tracker import EvidenceTracker, extract_claims
 from tools.registry import ToolRegistry
 from utils.audit_log import AuditLogger
 from utils.cost_tracker import CostTracker
@@ -237,6 +239,7 @@ class Orchestrator:
         enable_dashboard: bool = False,
         callbacks: AgentCallbacks | None = None,
         cost_tracker: CostTracker | None = None,
+        repo_path: str | None = None,
     ) -> None:
         self._config = config or load_config()
         self._client = OpenAI(api_key=self._config.model.api_key)
@@ -255,6 +258,12 @@ class Orchestrator:
         self._intent: IntentResult | None = None
         self._start_time: float = 0.0
         self._audit: AuditLogger | None = None
+
+        # Evidence tracking (anti-hallucination)
+        self._evidence = EvidenceTracker()
+
+        # Source code analysis (white-box mode)
+        self._repo_path: str | None = repo_path
 
         # Callbacks (use NullCallbacks for backward compat)
         self._cb: AgentCallbacks = callbacks or NullCallbacks()
@@ -328,6 +337,7 @@ class Orchestrator:
         self._custom_flag_pattern = flag_pattern
         self._cancelled = False
         self._start_time = time.time()
+        self._evidence = EvidenceTracker()  # reset for each solve
 
         # Create session
         sid = self._session.new_session(
@@ -556,11 +566,17 @@ class Orchestrator:
         # --- Phase 2.5: Knowledge base hints ---
         knowledge_hint = self._get_knowledge_hints(description, category.value)
 
+        # --- Phase 2.6: Source code analysis (white-box) ---
+        code_hints = self._run_code_analysis()
+
         # --- Phase 3: Setup context with skill-based prompt ---
         intent_context = self._build_intent_context()
+        extra_ctx = self._build_extra_context(target_url, file_info)
+        if code_hints:
+            extra_ctx += "\n" + code_hints
         system_prompt = build_system_prompt(
             category=category.value,
-            extra_context=self._build_extra_context(target_url, file_info),
+            extra_context=extra_ctx,
             intent_context=intent_context,
         )
         self._context.set_system_prompt(system_prompt)
@@ -893,6 +909,11 @@ class Orchestrator:
         result = self._registry.execute(name, args)
 
         output = result.output if result.success else f"[ERROR] {result.error}"
+
+        # Record evidence for anti-hallucination tracking
+        command_str = json.dumps(args, ensure_ascii=False)[:300]
+        self._evidence.add(tool=name, command=command_str, output=output)
+
         self._cb.on_tool_result(name, output, result.success)
 
         # Audit: tool result
@@ -968,6 +989,41 @@ class Orchestrator:
         answer = args.get("answer", "")
         confidence = args.get("confidence", "medium")
         flag = args.get("flag", "") or ""
+
+        # --- Evidence validation (anti-hallucination) ---
+        claims = extract_claims(answer)
+        if claims:
+            _, unverified = self._evidence.verify_claims(claims)
+            if unverified:
+                self._log.info(
+                    f"Unverified claims in answer: {unverified}"
+                )
+                # Re-prompt the agent to fix unverified claims
+                self._context.add_tool_result(
+                    tc_id,
+                    f"WARNING: Your answer contains data not found in any "
+                    f"tool output: {unverified}. Remove these claims or "
+                    f"provide the tool command that produced this data. "
+                    f"Call answer_user again with a corrected answer.",
+                )
+                # Give the agent one more chance to correct
+                corrected_msg = self._call_llm()
+                if corrected_msg is not None:
+                    self._context.add_assistant_message(corrected_msg)
+                    # Check if the corrected response calls answer_user
+                    tc_list = corrected_msg.get("tool_calls", [])
+                    for corrected_tc in tc_list:
+                        cfunc = corrected_tc.get("function", {})
+                        if cfunc.get("name") == "answer_user":
+                            try:
+                                cargs = json.loads(cfunc["arguments"])
+                            except json.JSONDecodeError:
+                                cargs = {}
+                            answer = cargs.get("answer", answer)
+                            confidence = cargs.get("confidence", confidence)
+                            flag = cargs.get("flag", "") or flag
+                            tc_id = corrected_tc["id"]
+                            break
 
         # Execute the tool so it produces output for logging
         result = self._registry.execute("answer_user", args)
@@ -1107,6 +1163,8 @@ class Orchestrator:
                 session_data=asdict(session_data),
                 cost_data=self._cost.to_dict(),
                 duration_s=duration,
+                evidence_tracker=self._evidence,
+                answer=result.answer,
             )
             report_path = save_report(
                 report_md=report_md,
@@ -1119,6 +1177,43 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _run_code_analysis(self) -> str:
+        """Run static code analysis if a repo path was provided.
+
+        Returns:
+            Formatted findings string for the system prompt, or "".
+        """
+        if not self._repo_path or not Path(self._repo_path).is_dir():
+            return ""
+
+        try:
+            analyzer = CodeAnalyzer()
+            analysis = analyzer.analyze_directory(self._repo_path)
+
+            if analysis["findings"]:
+                summary = analyzer.summary(analysis)
+                self._cb.on_phase("Code Analysis", summary)
+                self._log.info(summary)
+
+                if self._audit:
+                    self._audit.log(
+                        "code_analysis",
+                        language=analysis["language"],
+                        files_scanned=analysis["files_scanned"],
+                        findings_count=len(analysis["findings"]),
+                    )
+
+                return analyzer.format_for_prompt(analysis)
+            else:
+                self._cb.on_phase(
+                    "Code Analysis",
+                    f"Scanned {analysis['files_scanned']} files — no patterns found",
+                )
+                return ""
+        except Exception as exc:
+            self._log.debug(f"Code analysis failed: {exc}")
+            return ""
 
     def _build_intent_context(self) -> str:
         """Build intent-specific context for the system prompt."""

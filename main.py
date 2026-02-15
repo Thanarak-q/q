@@ -631,6 +631,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output file path for writeup.",
     )
     parser.add_argument(
+        "--repo",
+        metavar="PATH",
+        default=None,
+        help="Path to target app source code for white-box analysis.",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -679,7 +685,7 @@ def main() -> None:
         # Default: interactive chat mode
         from ui.chat import chat_loop
 
-        chat_loop(verbose=args.verbose)
+        chat_loop(verbose=args.verbose, repo_path=args.repo)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 # Command help — grouped by function
 COMMAND_HELP: dict[str, str] = {
     # Solving
+    "/repo <path>": "Set source code path for white-box analysis",
     "/resume [id|latest]": "Resume a paused session",
     "/report [list|id]": "Show latest report, list all, or show by session ID",
     "/audit [id]": "Show audit log (current or by session ID)",
@@ -74,6 +75,7 @@ def handle_command(
 
     handlers = {
         "/help": _cmd_help,
+        "/repo": _cmd_repo,
         "/model": _cmd_model,
         "/config": _cmd_config,
         "/category": _cmd_category,
@@ -113,6 +115,38 @@ def handle_command(
 
 def _cmd_help(arg: str, state: ChatState, display: Display) -> bool:
     display.show_help(COMMAND_HELP)
+    return False
+
+
+def _cmd_repo(arg: str, state: ChatState, display: Display) -> bool:
+    if not arg:
+        current = state.repo_path or "(none)"
+        display.console.print(
+            f"\n  Source code repo: [cyan]{current}[/cyan]\n"
+            f"  [dim]Use /repo <path> to set, /repo off to clear.[/dim]\n"
+        )
+        return False
+
+    if arg.strip().lower() in ("off", "none", "clear"):
+        state.repo_path = None
+        display.show_info("White-box mode disabled.")
+        return False
+
+    path = Path(arg.strip()).expanduser().resolve()
+    if not path.is_dir():
+        display.show_error(f"Directory not found: {path}")
+        return False
+
+    state.repo_path = str(path)
+
+    # Run analysis immediately to give feedback
+    from tools.code_analyzer import CodeAnalyzer
+
+    analyzer = CodeAnalyzer()
+    analysis = analyzer.analyze_directory(str(path))
+    summary = analyzer.summary(analysis)
+    display.show_info(f"Repo set: {path}")
+    display.console.print(f"  [dim]{summary}[/dim]\n")
     return False
 
 
@@ -281,6 +315,7 @@ def _cmd_clear(arg: str, state: ChatState, display: Display) -> bool:
     state.pending_files = []
     state.pending_url = None
     state.forced_category = None
+    # Note: repo_path is intentionally NOT cleared — it persists
     return False
 
 
