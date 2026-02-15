@@ -40,6 +40,8 @@ from report.generator import generate_report, save_report
 from tools.code_analyzer import CodeAnalyzer
 from tools.evidence_tracker import EvidenceTracker, extract_claims
 from tools.registry import ToolRegistry
+from tools.response_parser import ResponseParser
+from tools.web_state import WebState
 from utils.audit_log import AuditLogger
 from utils.cost_tracker import CostTracker
 from utils.dashboard import Dashboard
@@ -263,6 +265,10 @@ class Orchestrator:
         # Evidence tracking (anti-hallucination)
         self._evidence = EvidenceTracker()
 
+        # Web state tracking (multi-step exploit state)
+        self._web_state = WebState()
+        self._response_parser = ResponseParser()
+
         # Source code analysis (white-box mode)
         self._repo_path: str | None = repo_path
 
@@ -349,6 +355,9 @@ class Orchestrator:
         self._cancelled = False
         self._start_time = time.time()
         self._evidence = EvidenceTracker()  # reset for each solve
+        self._web_state = WebState()  # reset for each solve
+        if target_url:
+            self._web_state.base_url = target_url
 
         # Create session
         sid = self._session.new_session(
@@ -946,6 +955,11 @@ class Orchestrator:
         command_str = json.dumps(args, ensure_ascii=False)[:300]
         self._evidence.add(tool=name, command=command_str, output=output)
 
+        # Smart response parsing for web tools (network, browser, recon)
+        enriched_output = output
+        if result.success and name in ("network", "browser", "recon"):
+            enriched_output = self._enrich_web_output(name, args, output)
+
         self._cb.on_tool_result(name, output, result.success)
 
         # Audit: tool result
@@ -964,7 +978,7 @@ class Orchestrator:
         if result.success:
             self._pivot.record_progress(self._iteration)
 
-        self._context.add_tool_result(tc_id, output)
+        self._context.add_tool_result(tc_id, enriched_output)
 
         # Dashboard update
         if self._dashboard:
@@ -1320,6 +1334,78 @@ class Orchestrator:
         except Exception as exc:
             self._log.debug(f"Code analysis failed: {exc}")
             return ""
+
+    def _enrich_web_output(
+        self, tool_name: str, args: dict[str, Any], output: str
+    ) -> str:
+        """Parse web tool output and append CTF-relevant findings.
+
+        Also updates web state (cookies, tech stack, endpoints) and
+        suggests exploit templates when indicators are found.
+
+        Args:
+            tool_name: The tool that produced the output.
+            args: Tool arguments.
+            output: Raw tool output.
+
+        Returns:
+            Enriched output with findings appended.
+        """
+        try:
+            parsed = self._response_parser.parse(output)
+
+            # Update web state from parsed response
+            if parsed.cookies:
+                self._web_state.set_cookies(parsed.cookies)
+            if parsed.tech_stack:
+                for t in parsed.tech_stack:
+                    if t not in self._web_state.tech_stack:
+                        self._web_state.tech_stack.append(t)
+            if parsed.interesting_paths:
+                for p in parsed.interesting_paths[:10]:
+                    self._web_state.add_endpoint(p)
+
+            # Format findings
+            findings = self._response_parser.format_findings(parsed)
+            if not findings:
+                return output
+
+            # Suggest exploit templates based on findings
+            template_hint = ""
+            try:
+                from knowledge.exploit_templates import (
+                    format_templates_for_prompt,
+                    suggest_templates,
+                )
+
+                indicators = {
+                    "sql_errors": parsed.sql_errors,
+                    "ssti_indicators": parsed.ssti_indicators,
+                    "jwt_tokens": parsed.jwt_tokens,
+                    "tech_stack": parsed.tech_stack,
+                    "status_code": parsed.status_code,
+                }
+                templates = suggest_templates(indicators=indicators)
+                if templates:
+                    template_hint = "\n" + format_templates_for_prompt(
+                        templates[:3]
+                    )
+            except Exception:
+                pass
+
+            enriched = output + "\n\n" + findings
+            if template_hint:
+                enriched += "\n" + template_hint
+
+            # Add web state summary periodically (every 3 iterations)
+            if self._iteration % 3 == 0:
+                state_summary = self._web_state.summary()
+                if state_summary:
+                    enriched += "\n\n" + state_summary
+
+            return enriched
+        except Exception:
+            return output
 
     def _build_intent_context(self) -> str:
         """Build intent-specific context for the system prompt."""

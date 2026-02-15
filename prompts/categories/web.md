@@ -322,6 +322,61 @@ Priority order:
 
 ---
 
+## Decision Tree
+
+After recon, follow this decision tree to pick your attack:
+
+```
+START -> What did recon find?
+  |
+  +-- Login page?
+  |     +-- Try default creds (admin:admin, admin:password)
+  |     +-- Check for SQLi in login fields
+  |     +-- Check for type juggling (PHP: password=0)
+  |     +-- Look for registration -> mass assignment (add role=admin)
+  |     +-- Check for JWT -> try none alg / weak secret
+  |
+  +-- Search/input field?
+  |     +-- Test for SQLi: add ' to input
+  |     |     +-- Error? -> UNION-based extraction
+  |     |     +-- No error but different response? -> Blind boolean
+  |     |     +-- Nothing? -> Try time-based: ' AND SLEEP(5)--
+  |     +-- Test for SSTI: {{7*7}}
+  |     |     +-- 49 in response? -> Jinja2/Twig RCE
+  |     +-- Test for XSS: <script>alert(1)</script>
+  |     +-- Test for command injection: ; id
+  |
+  +-- File parameter (file=, page=, include=)?
+  |     +-- LFI: ../../../../etc/passwd
+  |     +-- PHP? -> php://filter wrappers for source code
+  |     +-- Log poisoning for RCE
+  |
+  +-- URL/fetch parameter?
+  |     +-- SSRF: http://127.0.0.1/, file:///etc/passwd
+  |     +-- Cloud metadata: http://169.254.169.254/
+  |
+  +-- File upload?
+  |     +-- Upload PHP shell (.php, .phtml, .php5)
+  |     +-- Bypass: double ext, null byte, content-type
+  |
+  +-- API endpoint?
+  |     +-- Check auth (JWT, API key)
+  |     +-- IDOR: change user ID in requests
+  |     +-- Mass assignment in PUT/PATCH
+  |
+  +-- 403 Forbidden on interesting path?
+  |     +-- Header bypass: X-Forwarded-For: 127.0.0.1
+  |     +-- Path tricks: /admin..;/ or //admin
+  |
+  +-- Nothing obvious?
+        +-- View page source for HTML comments
+        +-- Check JS files for API endpoints/secrets
+        +-- Check robots.txt, .git/HEAD, .env
+        +-- Run gobuster for hidden paths
+```
+
+---
+
 ## CRITICAL RULES FOR AGENT
 
 1. **Recon first** — identify stack before attacking
@@ -329,3 +384,6 @@ Priority order:
 3. **Read the source** — HTML comments and JS files often have hints
 4. **Don't brute force** unless CTF explicitly allows it
 5. **Check cookies and headers** — flags sometimes hide there
+6. **Use the decision tree** — follow the structured approach above
+7. **Track what you tried** — don't repeat failed approaches
+8. **Check response analysis** — look at highlighted findings before next step
