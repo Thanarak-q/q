@@ -8,6 +8,7 @@ session management.
 from __future__ import annotations
 
 import json
+import random
 import signal
 import sys
 import time
@@ -19,6 +20,8 @@ from agent.orchestrator import AgentCallbacks, Orchestrator, SolveResult
 from config import AppConfig, load_config
 from ui.commands import handle_command
 from ui.display import Display
+from ui.input_filter import classify_input
+from ui.input_handler import QInput
 from ui.tree import (
     NodeState,
     TaskTree,
@@ -242,10 +245,11 @@ class ChatCallbacks(AgentCallbacks):
     # -- User interaction ------------------------------------------
 
     def on_ask_user(self, prompt: str) -> str:
+        from prompt_toolkit import prompt as pt_prompt
+
         self._display.console.print(f"\n  [warning]{prompt}[/warning]")
         try:
-            hint = self._display.console.input("  [bold]hint> [/bold]")
-            return hint
+            return pt_prompt("  hint> ")
         except (KeyboardInterrupt, EOFError):
             return ""
 
@@ -287,26 +291,36 @@ class ChatCallbacks(AgentCallbacks):
 
 
 # ------------------------------------------------------------------
-# Input handling
+# Input handling (prompt_toolkit-based)
 # ------------------------------------------------------------------
 
 
-def read_input(display: Display) -> str | None:
-    """Read user input with multi-line support.
+def read_input(qi: QInput, display: Display) -> str | None:
+    """Read user input with prompt_toolkit line editing.
 
-    Supports:
-    - Single line input
-    - Multi-line via triple quotes (\"\"\")
-    - Multi-line via backslash continuation (\\\\)
-    - EOF (Ctrl+D) returns None
+    Features:
+    - Arrow keys work (cursor navigation, history)
+    - Tab auto-complete for slash commands
+    - Ctrl+R history search
+    - Multi-line via triple quotes or backslash continuation
+    - Ctrl+C returns empty string, Ctrl+D returns None
+
+    Args:
+        qi: QInput instance with prompt_toolkit session.
+        display: Display for fallback output.
+
+    Returns:
+        User input string, empty on Ctrl+C, None on EOF.
     """
-    try:
-        line = display.console.input("[bold]> [/bold]")
-    except EOFError:
+    line = qi.get_input("> ")
+
+    # Ctrl+D (EOF)
+    if line is None:
         return None
-    except KeyboardInterrupt:
-        display.console.print()
-        return ""
+
+    # Ctrl+C — pass sentinel through so main loop can handle it
+    if line == QInput.CTRL_C:
+        return QInput.CTRL_C
 
     stripped = line.strip()
 
@@ -314,9 +328,8 @@ def read_input(display: Display) -> str | None:
     if stripped.startswith('"""'):
         lines = [stripped[3:]]
         while True:
-            try:
-                next_line = display.console.input("[dim]... [/dim]")
-            except (EOFError, KeyboardInterrupt):
+            next_line = qi.get_continuation("... ")
+            if next_line is None:
                 break
             if next_line.rstrip().endswith('"""'):
                 lines.append(next_line.rstrip()[:-3])
@@ -328,9 +341,8 @@ def read_input(display: Display) -> str | None:
     if stripped.endswith("\\"):
         lines = [stripped[:-1]]
         while True:
-            try:
-                next_line = display.console.input("[dim]... [/dim]")
-            except (EOFError, KeyboardInterrupt):
+            next_line = qi.get_continuation("... ")
+            if next_line is None:
                 break
             if next_line.rstrip().endswith("\\"):
                 lines.append(next_line.rstrip()[:-1])
@@ -586,32 +598,95 @@ def chat_loop(
                 f"  [dim]Target: {yaml_config.target.url}[/dim]"
             )
 
+    # Input handler with prompt_toolkit (arrow keys, autocomplete, history)
+    qi = QInput()
+
+    # Ctrl+C double-tap tracker for idle mode
+    _last_idle_ctrl_c: float = 0.0
+
+    # Ignore Ctrl+Z (SIGTSTP) — no job control in agent mode
+    try:
+        signal.signal(signal.SIGTSTP, signal.SIG_IGN)
+    except (OSError, AttributeError):
+        pass  # SIGTSTP not available on Windows
+
+    # Greeting responses
+    _GREETINGS = [
+        "Hey! Got a CTF challenge for me?",
+        "Hi! Paste a challenge or type /help",
+        "Yo! Ready to hack. What's the target?",
+    ]
+
     # Main loop
     try:
         while True:
-            user_input = read_input(display)
+            raw_input = read_input(qi, display)
 
-            # EOF
-            if user_input is None:
+            # EOF (Ctrl+D)
+            if raw_input is None:
                 display.show_goodbye(
                     state.total_session_cost, len(state.solve_history)
                 )
                 break
 
-            # Empty input
-            if not user_input:
+            # Ctrl+C while idle — double-tap to exit
+            if raw_input == QInput.CTRL_C:
+                now = time.time()
+                if now - _last_idle_ctrl_c < 2.0:
+                    display.show_goodbye(
+                        state.total_session_cost, len(state.solve_history)
+                    )
+                    break
+                _last_idle_ctrl_c = now
+                display.console.print(
+                    "  [dim]Press Ctrl+C again to quit, "
+                    "or type a challenge.[/dim]"
+                )
                 continue
 
-            # Slash commands
-            if user_input.startswith("/"):
-                should_exit = handle_command(user_input, state, display)
+            # Empty input
+            if not raw_input:
+                continue
+
+            # Classify input before acting
+            action = classify_input(raw_input)
+
+            if action["action"] == "ignore":
+                continue
+
+            elif action["action"] == "exit":
+                display.show_goodbye(
+                    state.total_session_cost, len(state.solve_history)
+                )
+                break
+
+            elif action["action"] == "greet":
+                display.console.print(
+                    f"  [dim]{random.choice(_GREETINGS)}[/dim]"
+                )
+                continue
+
+            elif action["action"] == "help":
+                handle_command("/help", state, display)
+                continue
+
+            elif action["action"] == "command":
+                should_exit = handle_command(action["cmd"], state, display)
                 if should_exit:
                     break
                 continue
 
-            # It's a challenge description — solve it
-            display.console.print()
-            run_solve(user_input, state, display, callbacks)
+            elif action["action"] == "clarify":
+                display.console.print(
+                    f"  [dim]Did you mean to solve a challenge? "
+                    f"Give me more details.[/dim]\n"
+                    f"  [dim]Or type /help for commands.[/dim]"
+                )
+                continue
+
+            elif action["action"] == "solve":
+                display.console.print()
+                run_solve(action["text"], state, display, callbacks)
 
     except KeyboardInterrupt:
         display.console.print()
