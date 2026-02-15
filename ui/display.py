@@ -15,7 +15,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 # Simplified theme — only the styles still needed
 CHAT_THEME = Theme(
@@ -58,15 +58,28 @@ class Display:
 
         capy_lines = CAPYBARA.split("\n")
 
+        # Get stats summary if available
+        stats_line = ""
+        try:
+            from stats.tracker import StatsTracker
+            stats_line = StatsTracker().get_summary_line() or ""
+        except Exception:
+            pass
+
         # Right-side info — each entry is (text, Rich style).
         right: list[tuple[str, str]] = [
             ("Welcome back!", "bold white"),
             ("", ""),
-            ("q is a green capybara CTF solving", "dim"),
+        ]
+        if stats_line:
+            right.append((stats_line, "dim"))
+        else:
+            right.append(("q is a green capybara CTF solver", "dim"))
+        right.extend([
             (short_ws, "dim"),
             ("", ""),
-            ("Tips: /help", "dim"),
-        ]
+            ("Tips: /help - /stats - /knowledge", "dim"),
+        ])
 
         # Dimensions
         gap = 4

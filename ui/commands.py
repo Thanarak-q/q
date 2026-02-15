@@ -14,27 +14,33 @@ if TYPE_CHECKING:
     from ui.display import Display
 
 
-# Command help descriptions
+# Command help — grouped by function
 COMMAND_HELP: dict[str, str] = {
-    "/help": "Show this help message",
-    "/model [name]": "Show or change the model (gpt-4o, gpt-4o-mini, o3)",
-    "/config": "Show current configuration",
-    "/category [cat]": "Force category (web/pwn/crypto/reverse/forensics/misc)",
+    # Solving
+    "/resume [id|latest]": "Resume a paused session",
+    "/report [list|id]": "Show latest report, list all, or show by session ID",
+    "/audit [id]": "Show audit log (current or by session ID)",
+    # Intelligence
+    "/knowledge [search|clear|export]": "Knowledge base stats or search",
+    "/stats": "Performance dashboard",
+    "/benchmark <file>": "Run benchmark challenges from a JSON file",
+    "/workflow [id]": "Show workflow state history",
+    # Session
     "/file <path>": "Load a file into the workspace",
     "/url <url>": "Set the target URL for the next challenge",
-    "/cost": "Show token usage and cost for this session",
-    "/history": "Show solve history for this session",
-    "/clear": "Clear screen and reset context",
+    "/category [cat]": "Force category (web/pwn/crypto/reverse/forensics/misc)",
     "/save": "Save current session",
     "/load <id>": "Load a saved session",
     "/sessions": "List all saved sessions",
-    "/report [list|id]": "Show latest report, list all, or show by session ID",
-    "/resume [id|latest]": "Resume a paused session",
-    "/audit [id]": "Show audit log (current or by session ID)",
-    "/verbose [on|off]": "Toggle verbose mode (full thinking + tool output)",
-    "/mode": "Show pipeline mode (single agent)",
-    "/benchmark <file>": "Run benchmark challenges from a JSON file",
-    "/workflow [id]": "Show workflow state history for a session",
+    "/history": "Show solve history for this session",
+    # Settings
+    "/model [name]": "Show or change the model (gpt-4o, gpt-4o-mini, o3)",
+    "/config": "Show current configuration",
+    "/cost": "Show token usage and cost for this session",
+    "/verbose [on|off]": "Toggle verbose mode",
+    "/clear": "Clear screen and reset context",
+    "/mode": "Show pipeline mode",
+    "/help": "Show this help message",
     "/exit, /quit": "Exit with session summary",
 }
 
@@ -84,6 +90,8 @@ def handle_command(
         "/audit": _cmd_audit,
         "/verbose": _cmd_verbose,
         "/mode": _cmd_mode,
+        "/knowledge": _cmd_knowledge,
+        "/stats": _cmd_stats,
         "/benchmark": _cmd_benchmark,
         "/workflow": _cmd_workflow,
         "/exit": _cmd_exit,
@@ -475,6 +483,135 @@ def _cmd_verbose(arg: str, state: ChatState, display: Display) -> bool:
 
 def _cmd_mode(arg: str, state: ChatState, display: Display) -> bool:
     display.show_info("Single-agent mode (multi-agent pipeline removed)")
+    return False
+
+
+def _cmd_knowledge(arg: str, state: ChatState, display: Display) -> bool:
+    from knowledge.base import KnowledgeBase
+    from rich.table import Table
+
+    kb = KnowledgeBase()
+    parts = arg.split(maxsplit=1) if arg else []
+    subcmd = parts[0].lower() if parts else ""
+
+    if subcmd == "search":
+        query = parts[1] if len(parts) > 1 else ""
+        if not query:
+            display.show_error("Usage: /knowledge search <query>")
+            return False
+        results = kb.search(query, limit=5)
+        if not results:
+            display.show_info(f"No matches for: {query}")
+            return False
+        table = Table(title=f"Knowledge: \"{query}\"")
+        table.add_column("Challenge", max_width=40)
+        table.add_column("Category")
+        table.add_column("Techniques", max_width=30)
+        table.add_column("Steps", justify="right")
+        table.add_column("Cost", justify="right")
+        for r in results:
+            table.add_row(
+                r.get("challenge", "?")[:40],
+                r.get("category", "?"),
+                ", ".join(r.get("techniques", [])[:3]),
+                str(r.get("steps", "?")),
+                f"${r.get('cost', 0):.3f}",
+            )
+        display.console.print(table)
+        return False
+
+    if subcmd == "clear":
+        count = len(kb.entries)
+        if count == 0:
+            display.show_info("Knowledge base is already empty.")
+            return False
+        kb.clear()
+        display.show_info(f"Cleared {count} entries from knowledge base.")
+        return False
+
+    if subcmd == "export":
+        path = kb.export()
+        display.show_info(f"Knowledge exported to {path}")
+        return False
+
+    # Default: show stats
+    stats = kb.get_stats()
+    if stats["total"] == 0:
+        display.show_info("Knowledge base is empty. Solve some challenges first!")
+        return False
+
+    display.console.print(f"\n  [bold]Knowledge Base[/bold]")
+    display.console.print(
+        f"  Entries: {stats['total']}  |  "
+        f"Successful: {stats['success']}"
+    )
+    if stats["by_category"]:
+        cats = ", ".join(
+            f"{k}: {v}" for k, v in sorted(stats["by_category"].items())
+        )
+        display.console.print(f"  Categories: {cats}")
+    if stats["top_techniques"]:
+        techs = ", ".join(list(stats["top_techniques"].keys())[:5])
+        display.console.print(f"  Top techniques: {techs}")
+    if stats["top_tools"]:
+        tools = ", ".join(list(stats["top_tools"].keys())[:5])
+        display.console.print(f"  Top tools: {tools}")
+    display.console.print()
+    return False
+
+
+def _cmd_stats(arg: str, state: ChatState, display: Display) -> bool:
+    from stats.tracker import StatsTracker
+    from rich.table import Table
+
+    tracker = StatsTracker()
+    dashboard = tracker.get_dashboard()
+
+    if "message" in dashboard:
+        display.show_info(dashboard["message"])
+        return False
+
+    overall = dashboard["overall"]
+    streaks = dashboard["streaks"]
+    recent = dashboard["recent_7d"]
+
+    display.console.print(f"\n  [bold]Q Stats[/bold]")
+    display.console.print(
+        f"  Overall: {overall['total']} challenges - "
+        f"{overall['success']} solved ({overall['rate']})"
+    )
+    display.console.print(
+        f"  Cost: {overall['total_cost']} total - "
+        f"{overall['avg_cost']} avg"
+    )
+    streak_str = f"  Streak: {streaks['current']} wins"
+    if streaks["best"] > streaks["current"]:
+        streak_str += f" - Best: {streaks['best']}"
+    display.console.print(streak_str)
+
+    categories = dashboard.get("categories", {})
+    if categories:
+        table = Table()
+        table.add_column("Category")
+        table.add_column("Solved")
+        table.add_column("Rate")
+        table.add_column("Avg Steps", justify="right")
+        table.add_column("Avg Cost", justify="right")
+        for cat, data in categories.items():
+            table.add_row(
+                cat,
+                data["solved"],
+                data["rate"],
+                data["avg_steps"],
+                data["avg_cost"],
+            )
+        display.console.print(table)
+
+    display.console.print(
+        f"  Last 7 days: {recent['solves']} solves - "
+        f"{recent['success']} success"
+    )
+    display.console.print()
     return False
 
 

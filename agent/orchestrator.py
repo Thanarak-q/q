@@ -398,6 +398,9 @@ class Orchestrator:
         # Generate and save report
         self._generate_and_save_report(result)
 
+        # Record to knowledge base + stats
+        self._record_knowledge_and_stats(description, result)
+
         return result
 
     def resume(
@@ -550,6 +553,9 @@ class Orchestrator:
         )
         self._log.info(f"Initial model: {self._current_model}")
 
+        # --- Phase 2.5: Knowledge base hints ---
+        knowledge_hint = self._get_knowledge_hints(description, category.value)
+
         # --- Phase 3: Setup context with skill-based prompt ---
         intent_context = self._build_intent_context()
         system_prompt = build_system_prompt(
@@ -565,6 +571,9 @@ class Orchestrator:
         if file_info:
             initial_message += f"\n\nFiles:\n{file_info}"
         initial_message += f"\n\nAttack plan:\n{plan}"
+
+        if knowledge_hint:
+            initial_message += knowledge_hint
 
         # Tailor the initial instruction based on intent
         if self._intent.intent == UserIntent.FIND_FLAG:
@@ -1168,3 +1177,73 @@ class Orchestrator:
             f"Available tools: {', '.join(self._registry.list_names())}"
         )
         return "\n".join(parts)
+
+    def _get_knowledge_hints(self, description: str, category: str) -> str:
+        """Search the knowledge base for similar past solves.
+
+        Returns:
+            Hint string to append to the initial message, or empty.
+        """
+        try:
+            from knowledge.base import KnowledgeBase
+
+            kb = KnowledgeBase()
+            similar = kb.search(description, category=category, limit=2)
+            if not similar:
+                return ""
+
+            lines = ["\n\n## Hints from similar past solves:"]
+            for s in similar:
+                lines.append(f"- \"{s['challenge'][:100]}\"")
+                cmds = s.get("commands", [])[:2]
+                if cmds:
+                    lines.append(f"  Used: {', '.join(cmds)}")
+                techs = s.get("techniques", [])
+                if techs:
+                    lines.append(f"  Techniques: {', '.join(techs[:3])}")
+                lines.append(f"  Solved in {s.get('steps', '?')} steps")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def _record_knowledge_and_stats(
+        self, description: str, result: SolveResult
+    ) -> None:
+        """Save solve data to the knowledge base and stats tracker."""
+        try:
+            from knowledge.base import KnowledgeBase
+            from knowledge.extractor import extract_from_solve
+
+            session_data = self._session.get_session_data()
+            steps_log = session_data.steps if session_data else []
+
+            entry = extract_from_solve(
+                challenge=description,
+                category=result.category,
+                steps_log=steps_log,
+                answer=result.answer,
+                flag=result.flags[0] if result.flags else None,
+                cost=result.cost_usd,
+            )
+            KnowledgeBase().add(entry)
+        except Exception as exc:
+            self._log.debug(f"Knowledge save failed: {exc}")
+
+        try:
+            from stats.tracker import StatsTracker
+
+            duration = time.time() - self._start_time if self._start_time else 0.0
+            StatsTracker().record({
+                "session_id": result.session_id,
+                "challenge": description[:200],
+                "category": result.category,
+                "intent": result.intent,
+                "success": result.success,
+                "steps": result.iterations,
+                "tokens": result.total_tokens,
+                "cost": round(result.cost_usd, 4),
+                "duration": round(duration, 1),
+                "model": self._current_model,
+            })
+        except Exception as exc:
+            self._log.debug(f"Stats save failed: {exc}")
