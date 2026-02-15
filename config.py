@@ -31,7 +31,7 @@ class ModelConfig:
 class AgentConfig:
     """Agent loop configuration."""
 
-    max_iterations: int = int(os.getenv("MAX_ITERATIONS", "30"))
+    max_iterations: int = int(os.getenv("MAX_ITERATIONS", "15"))
     stall_threshold: int = int(os.getenv("STALL_THRESHOLD", "5"))
     context_limit_percent: int = int(os.getenv("CONTEXT_LIMIT_PERCENT", "80"))
     tool_output_max_chars: int = int(os.getenv("TOOL_OUTPUT_MAX_CHARS", "4000"))
@@ -45,6 +45,7 @@ class ToolConfig:
     shell_timeout: int = int(os.getenv("TOOL_TIMEOUT_SHELL", "30"))
     python_timeout: int = int(os.getenv("TOOL_TIMEOUT_PYTHON", "60"))
     network_timeout: int = int(os.getenv("TOOL_TIMEOUT_NETWORK", "30"))
+    browser_timeout_ms: int = int(os.getenv("TOOL_TIMEOUT_BROWSER_MS", "30000"))
 
 
 @dataclass(frozen=True)
@@ -71,11 +72,11 @@ class LogConfig:
 class PipelineConfig:
     """Multi-agent pipeline configuration."""
 
-    mode: str = os.getenv("PIPELINE_MODE", "auto")  # auto|single|multi
+    mode: str = os.getenv("PIPELINE_MODE", "single")  # single (legacy multi removed)
     max_parallel_solvers: int = int(os.getenv("MAX_PARALLEL_SOLVERS", "3"))
-    recon_max_steps: int = int(os.getenv("RECON_MAX_STEPS", "8"))
-    analyst_max_steps: int = int(os.getenv("ANALYST_MAX_STEPS", "10"))
-    solver_max_steps: int = int(os.getenv("SOLVER_MAX_STEPS", "15"))
+    recon_max_steps: int = int(os.getenv("RECON_MAX_STEPS", "4"))
+    analyst_max_steps: int = int(os.getenv("ANALYST_MAX_STEPS", "6"))
+    solver_max_steps: int = int(os.getenv("SOLVER_MAX_STEPS", "8"))
     reporter_max_steps: int = int(os.getenv("REPORTER_MAX_STEPS", "3"))
     fast_path_enabled: bool = os.getenv("FAST_PATH_ENABLED", "true").lower() == "true"
 

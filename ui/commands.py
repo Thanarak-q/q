@@ -32,7 +32,9 @@ COMMAND_HELP: dict[str, str] = {
     "/resume [id|latest]": "Resume a paused session",
     "/audit [id]": "Show audit log (current or by session ID)",
     "/verbose [on|off]": "Toggle verbose mode (full thinking + tool output)",
-    "/mode [auto|single|multi]": "Show or set pipeline mode",
+    "/mode": "Show pipeline mode (single agent)",
+    "/benchmark <file>": "Run benchmark challenges from a JSON file",
+    "/workflow [id]": "Show workflow state history for a session",
     "/exit, /quit": "Exit with session summary",
 }
 
@@ -82,6 +84,8 @@ def handle_command(
         "/audit": _cmd_audit,
         "/verbose": _cmd_verbose,
         "/mode": _cmd_mode,
+        "/benchmark": _cmd_benchmark,
+        "/workflow": _cmd_workflow,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -469,28 +473,101 @@ def _cmd_verbose(arg: str, state: ChatState, display: Display) -> bool:
     return False
 
 
-VALID_MODES = {"auto", "single", "multi"}
-
-
 def _cmd_mode(arg: str, state: ChatState, display: Display) -> bool:
+    display.show_info("Single-agent mode (multi-agent pipeline removed)")
+    return False
+
+
+def _cmd_benchmark(arg: str, state: ChatState, display: Display) -> bool:
     if not arg:
-        display.console.print(
-            f"\n  Pipeline mode: [cyan]{state.pipeline_mode}[/cyan]\n"
-            f"  [dim]auto  = multi-agent pipeline (default)[/dim]\n"
-            f"  [dim]single = classic single-agent mode[/dim]\n"
-            f"  [dim]multi  = always use multi-agent pipeline[/dim]\n"
-        )
+        display.show_error("Usage: /benchmark <challenges.json>")
         return False
 
-    mode = arg.strip().lower()
-    if mode not in VALID_MODES:
-        display.show_error(
-            f"Unknown mode '{mode}'. Valid: {', '.join(sorted(VALID_MODES))}"
-        )
+    from pathlib import Path as P
+
+    fpath = P(arg.strip())
+    if not fpath.exists():
+        display.show_error(f"File not found: {fpath}")
         return False
 
-    state.pipeline_mode = mode
-    display.show_info(f"Pipeline mode: {mode}")
+    from benchmark.runner import BenchmarkRunner
+    from rich.table import Table
+
+    display.show_info(f"Running benchmark: {fpath}")
+
+    try:
+        runner = BenchmarkRunner(challenges_file=fpath)
+        results = runner.run()
+        summary = runner.summarize(results)
+    except Exception as exc:
+        display.show_error(f"Benchmark failed: {exc}")
+        return False
+
+    table = Table(title="Benchmark Results")
+    table.add_column("ID", style="dim")
+    table.add_column("Name", max_width=30)
+    table.add_column("Passed")
+    table.add_column("Steps", justify="right")
+    table.add_column("Cost", justify="right")
+
+    for r in results:
+        style = "green" if r.passed else "red"
+        table.add_row(
+            r.id,
+            r.name,
+            f"[{style}]{'PASS' if r.passed else 'FAIL'}[/{style}]",
+            f"{r.steps}/{r.max_steps}",
+            f"${r.cost:.4f}",
+        )
+
+    display.console.print(table)
+    display.console.print(
+        f"\nPassed: {summary['passed']}/{summary['total_challenges']}  |  "
+        f"Pass rate: {summary['pass_rate']}  |  "
+        f"Cost: ${summary['total_cost_usd']:.4f}"
+    )
+    return False
+
+
+def _cmd_workflow(arg: str, state: ChatState, display: Display) -> bool:
+    from utils.session_manager import SessionManager
+    from rich.table import Table
+
+    sid = arg.strip() if arg else state.last_session_id
+    if not sid:
+        display.show_error("Usage: /workflow <session_id>")
+        return False
+
+    mgr = SessionManager(session_dir=state.config.log.session_dir)
+    data = mgr.load(sid)
+    if data is None:
+        display.show_error(f"Session not found: {sid}")
+        return False
+
+    display.console.print(
+        f"\n  [bold]Workflow: {sid}[/bold]\n"
+        f"  Current state: [cyan]{data.workflow_state}[/cyan]\n"
+    )
+
+    if not data.workflow_history:
+        display.show_info("No workflow transitions recorded.")
+        return False
+
+    table = Table(title="Workflow History")
+    table.add_column("From", style="dim")
+    table.add_column("To", style="cyan")
+    table.add_column("Detail", max_width=50)
+    table.add_column("Timestamp")
+
+    for entry in data.workflow_history:
+        table.add_row(
+            entry.get("from", "?"),
+            entry.get("to", "?"),
+            entry.get("detail", ""),
+            entry.get("timestamp", "")[:19],
+        )
+
+    display.console.print(table)
     return False
 
 

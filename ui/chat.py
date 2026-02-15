@@ -61,7 +61,6 @@ class ChatState:
     solving: bool = False
     verbose: bool = False
     sandbox_display: str = "local"
-    pipeline_mode: str = "auto"
 
 
 # ------------------------------------------------------------------
@@ -408,7 +407,6 @@ def run_solve(
         workspace=state.workspace,
         callbacks=callbacks,
         cost_tracker=state.session_cost_tracker,
-        mode=state.pipeline_mode,
     )
 
     state.solving = True
@@ -509,12 +507,11 @@ def run_solve(
 # ------------------------------------------------------------------
 
 
-def chat_loop(verbose: bool = False, mode: str | None = None) -> None:
+def chat_loop(verbose: bool = False) -> None:
     """Run the main interactive chat loop.
 
     Args:
         verbose: Enable verbose output.
-        mode: Pipeline mode override ('auto', 'single', 'multi').
     """
     # Load config
     config = load_config()
@@ -540,7 +537,6 @@ def chat_loop(verbose: bool = False, mode: str | None = None) -> None:
         current_model=config.model.default_model,
         workspace=Path.cwd(),
         verbose=verbose,
-        pipeline_mode=mode or config.pipeline.mode,
     )
     callbacks = ChatCallbacks(display, state)
 

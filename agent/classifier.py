@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
@@ -25,6 +26,7 @@ class Category(str, Enum):
     CRYPTO = "crypto"
     REVERSE = "reverse"
     FORENSICS = "forensics"
+    OSINT = "osint"
     MISC = "misc"
 
 
@@ -55,7 +57,8 @@ associated file information, classify it into exactly ONE of these categories:
 - crypto: Cryptography, RSA, AES, XOR, hashing, PRNG
 - reverse: Reverse engineering, disassembly, decompilation, keygen, crackme
 - forensics: Digital forensics, steganography, PCAP analysis, memory dumps
-- misc: Programming challenges, OSINT, jail escapes, encoding puzzles
+- osint: Open source intelligence, geolocation, username search, domain investigation
+- misc: Programming challenges, jail escapes, encoding puzzles
 
 Respond with ONLY the category name (lowercase, one word).
 """
@@ -139,27 +142,38 @@ def classify_challenge(
 
 
 def get_playbook(category: Category) -> str:
-    """Load the playbook for a given category.
+    """Load the category skill file (.md) for a given category.
 
     Args:
         category: The challenge category.
 
     Returns:
-        Playbook text string.
+        Skill file content string.
     """
-    playbook_map: dict[Category, str] = {}
+    categories_dir = Path(__file__).resolve().parent.parent / "prompts" / "categories"
+    skill_file = categories_dir / f"{category.value}.md"
 
-    # Import playbooks lazily to avoid circular imports
-    from prompts.categories import web, pwn, crypto, reverse, forensics, misc
+    if skill_file.exists():
+        return skill_file.read_text()
 
-    playbook_map[Category.WEB] = web.PLAYBOOK
-    playbook_map[Category.PWN] = pwn.PLAYBOOK
-    playbook_map[Category.CRYPTO] = crypto.PLAYBOOK
-    playbook_map[Category.REVERSE] = reverse.PLAYBOOK
-    playbook_map[Category.FORENSICS] = forensics.PLAYBOOK
-    playbook_map[Category.MISC] = misc.PLAYBOOK
+    # Fallback to misc
+    fallback = categories_dir / "misc.md"
+    if fallback.exists():
+        return fallback.read_text()
 
-    return playbook_map.get(category, misc.PLAYBOOK)
+    return ""
+
+
+def get_base_skills() -> str:
+    """Load the base SKILL.md rules that all agents share.
+
+    Returns:
+        SKILL.md content string.
+    """
+    skill_file = Path(__file__).resolve().parent.parent / "prompts" / "categories" / "SKILL.md"
+    if skill_file.exists():
+        return skill_file.read_text()
+    return ""
 
 
 def classify_intent(
@@ -227,6 +241,9 @@ def classify_intent(
 def max_steps_for_intent(intent: UserIntent, category: Category) -> int:
     """Return the maximum step budget based on intent and category.
 
+    Single-agent architecture: tight budgets to force efficiency.
+    Agent should aim for 3-6 steps; these are hard limits.
+
     Args:
         intent: Classified user intent.
         category: Challenge category.
@@ -240,9 +257,5 @@ def max_steps_for_intent(intent: UserIntent, category: Category) -> int:
         return 10
     if intent == UserIntent.ANALYZE:
         return 15
-
-    # find_flag — budget depends on difficulty
-    hard_categories = {Category.PWN, Category.CRYPTO}
-    if category in hard_categories:
-        return 30
+    # find_flag — always 15 max
     return 15

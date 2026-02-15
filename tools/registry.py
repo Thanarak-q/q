@@ -122,6 +122,9 @@ class ToolRegistry:
         self.register(NetworkTool())
         self.register(AnswerUserTool())
 
+        from tools.browser import BrowserTool
+        self.register(BrowserTool())
+
     @classmethod
     def from_subset(
         cls,

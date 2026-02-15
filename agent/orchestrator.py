@@ -1,12 +1,10 @@
-"""Main ReAct agent loop (orchestrator).
+"""Single-agent ReAct loop (orchestrator).
 
-Coordinates the classify -> plan -> solve loop, dispatching tool calls
+Coordinates the classify -> solve loop, dispatching tool calls
 and managing the agent's state until a flag is found, the agent calls
 answer_user, or limits are hit.
 
-Integrates: multi-model selection, graduated pivot system, cost tracking,
-session persistence, intent-aware stop conditions, optional Rich live
-dashboard, and callback-driven interactive UI support.
+Architecture: Classifier -> Single Agent (with skill cheat sheet) -> Auto Report
 """
 
 from __future__ import annotations
@@ -26,7 +24,6 @@ from agent.classifier import (
     UserIntent,
     classify_challenge,
     classify_intent,
-    get_playbook,
     max_steps_for_intent,
 )
 from agent.context_manager import ContextManager
@@ -46,7 +43,7 @@ from utils.cost_tracker import CostTracker
 from utils.dashboard import Dashboard
 from utils.flag_extractor import extract_flags
 from utils.logger import console, get_logger
-from utils.session_manager import SessionManager, StepRecord
+from utils.session_manager import SessionManager, StepRecord, WorkflowState
 
 
 # ------------------------------------------------------------------
@@ -129,27 +126,6 @@ class AgentCallbacks(ABC):
         Default implementation reads from console.
         """
         return console.input("[bold]Your hint> [/bold]")
-
-    # -- Multi-agent pipeline callbacks (non-abstract, default no-op) --
-
-    def on_agent_start(self, agent_role: str, model: str) -> None:
-        """Called when a pipeline agent begins its work."""
-
-    def on_agent_done(self, agent_role: str, summary: str, success: bool) -> None:
-        """Called when a pipeline agent completes."""
-
-    def on_pipeline_phase(
-        self, phase: str, detail: str, is_fast_path: bool = False
-    ) -> None:
-        """Called for pipeline phase transitions."""
-
-    def on_parallel_start(self, count: int) -> None:
-        """Called when parallel solvers are launched."""
-
-    def on_parallel_result(
-        self, index: int, success: bool, summary: str
-    ) -> None:
-        """Called when a parallel solver finishes."""
 
 
 class NullCallbacks(AgentCallbacks):
@@ -241,12 +217,14 @@ class SolveResult:
 
 
 class Orchestrator:
-    """The main ReAct agent that solves CTF challenges.
+    """Single-agent CTF solver.
 
     Implements the observe-think-act loop with automatic tool dispatch,
     context management, graduated strategy pivoting, multi-model
     selection, cost tracking, session persistence, and callback-driven
     UI integration.
+
+    Architecture: Classifier -> Single Agent (with skill cheat sheet) -> Auto Report
     """
 
     def __init__(
@@ -259,21 +237,7 @@ class Orchestrator:
         enable_dashboard: bool = False,
         callbacks: AgentCallbacks | None = None,
         cost_tracker: CostTracker | None = None,
-        mode: str | None = None,
     ) -> None:
-        """Initialise the orchestrator.
-
-        Args:
-            config: Application configuration (loaded from env if None).
-            docker_manager: Optional Docker sandbox manager.
-            workspace: Workspace directory for file operations.
-            session_manager: Optional session persistence manager.
-            dashboard: Optional pre-built dashboard instance.
-            enable_dashboard: If True and no dashboard given, create one.
-            callbacks: Optional UI callback handler.
-            cost_tracker: Optional shared cost tracker (for session accumulation).
-            mode: Pipeline mode override ('auto', 'single', 'multi').
-        """
         self._config = config or load_config()
         self._client = OpenAI(api_key=self._config.model.api_key)
         self._workspace = workspace or Path.cwd()
@@ -315,9 +279,6 @@ class Orchestrator:
         else:
             self._dashboard = None
 
-        # Pipeline mode
-        self._mode = mode or self._config.pipeline.mode
-
     @property
     def cost_tracker(self) -> CostTracker:
         """Access the cost tracker."""
@@ -351,8 +312,8 @@ class Orchestrator:
     ) -> SolveResult:
         """Solve a CTF challenge.
 
-        This is the main entry point.  It classifies the challenge,
-        creates a plan, then enters the ReAct loop.
+        This is the main entry point. It classifies the challenge,
+        then enters the single-agent ReAct loop with skill-based prompts.
 
         Args:
             description: Challenge description text.
@@ -392,18 +353,12 @@ class Orchestrator:
             self._dashboard.start()
 
         try:
-            if self._mode in ("multi", "auto"):
-                result = self._run_multi_pipeline(
-                    description, files, target_url, flag_pattern,
-                    forced_category, sid,
-                )
-            else:
-                result = self._run_pipeline(
-                    description, files, target_url, flag_pattern,
-                    forced_category,
-                )
+            result = self._run_pipeline(
+                description, files, target_url, flag_pattern, forced_category,
+            )
         except KeyboardInterrupt:
             self._cb.on_error("Interrupted by user.")
+            self._session.transition(WorkflowState.PAUSED, "Interrupted by user")
             self._session.update(status="paused")
             self._session.save()
             result = SolveResult(
@@ -520,53 +475,7 @@ class Orchestrator:
         return result
 
     # ------------------------------------------------------------------
-    # Multi-agent pipeline (new)
-    # ------------------------------------------------------------------
-
-    def _run_multi_pipeline(
-        self,
-        description: str,
-        files: list[Path] | None,
-        target_url: str | None,
-        flag_pattern: str | None,
-        forced_category: str | None,
-        session_id: str,
-    ) -> SolveResult:
-        """Delegate to the multi-agent Pipeline.
-
-        Args:
-            description: Challenge description.
-            files: Challenge files.
-            target_url: Target URL.
-            flag_pattern: Custom flag regex.
-            forced_category: Optional forced category.
-            session_id: Current session ID.
-
-        Returns:
-            SolveResult from the pipeline.
-        """
-        from agent.pipeline import Pipeline
-
-        pipeline = Pipeline(
-            config=self._config,
-            docker_manager=self._docker,
-            workspace=self._workspace,
-            callbacks=self._cb,
-            cost_tracker=self._cost,
-            session_manager=self._session,
-            audit=self._audit,
-        )
-        pipeline._state.session_id = session_id
-        return pipeline.run(
-            description=description,
-            files=files,
-            target_url=target_url,
-            flag_pattern=flag_pattern,
-            forced_category=forced_category,
-        )
-
-    # ------------------------------------------------------------------
-    # Internal pipeline (single-agent, legacy)
+    # Single-agent pipeline
     # ------------------------------------------------------------------
 
     def _run_pipeline(
@@ -577,7 +486,7 @@ class Orchestrator:
         flag_pattern: str | None,
         forced_category: str | None = None,
     ) -> SolveResult:
-        """Run the full classify -> plan -> solve pipeline.
+        """Run the classify -> solve pipeline (single agent).
 
         Args:
             description: Challenge description.
@@ -591,13 +500,14 @@ class Orchestrator:
         """
         # --- Phase 0: Intent classification ---
         self._cb.on_phase("Intent", "Classifying user intent...")
+        self._session.transition(WorkflowState.CLASSIFYING, "Intent classification")
         self._intent = classify_intent(description, self._client, self._config)
         self._cb.on_phase(
             "Intent",
             f"{self._intent.intent.value} — {self._intent.stop_criteria}",
         )
 
-        # --- Phase 1: Reconnaissance ---
+        # --- Phase 1: Category classification ---
         self._cb.on_phase("Classifying", "Detecting challenge category...")
         file_info = self._gather_file_info(files)
 
@@ -622,8 +532,8 @@ class Orchestrator:
             self._audit.log_classify(category=category.value, intent=intent_str)
 
         # --- Phase 2: Planning ---
+        self._session.transition(WorkflowState.PLANNING, f"Category: {category.value}")
         self._cb.on_phase("Planning", "Creating attack plan...")
-        playbook = get_playbook(category)
         plan = create_plan(
             description, category, file_info, self._client, self._config
         )
@@ -640,10 +550,10 @@ class Orchestrator:
         )
         self._log.info(f"Initial model: {self._current_model}")
 
-        # --- Phase 3: Setup context ---
+        # --- Phase 3: Setup context with skill-based prompt ---
         intent_context = self._build_intent_context()
         system_prompt = build_system_prompt(
-            category_playbook=playbook,
+            category=category.value,
             extra_context=self._build_extra_context(target_url, file_info),
             intent_context=intent_context,
         )
@@ -693,6 +603,7 @@ class Orchestrator:
         # Determine step budget based on intent
         intent_max = max_steps_for_intent(self._intent.intent, category)
         effective_max = min(self._config.agent.max_iterations, intent_max)
+        self._session.transition(WorkflowState.SOLVING, f"Max {effective_max} steps")
         self._cb.on_phase(
             "Solving",
             f"Entering solve loop (max {effective_max} steps)...",
@@ -765,6 +676,13 @@ class Orchestrator:
             # --- Final attempt prompt ---
             if self._iteration == max_iter - 3:
                 self._context.add_user_message(FINAL_ATTEMPT_PROMPT)
+
+            # --- LAST STEP: force answer ---
+            if self._iteration >= max_iter - 1:
+                self._context.add_user_message(
+                    "LAST STEP. You MUST call answer_user NOW with your best "
+                    "answer. Do not run any more commands — just answer."
+                )
 
             # --- Call LLM ---
             cost_records_before = len(self._cost.records)
@@ -852,6 +770,7 @@ class Orchestrator:
                 "Exhausted maximum iterations. "
                 "Here is what was discovered so far."
             )
+            self._session.transition(WorkflowState.FAILED, summary)
         self._cb.on_error(summary)
         return SolveResult(
             success=bool(self._found_flags),
@@ -1071,6 +990,8 @@ class Orchestrator:
             flags_found=[flag] if flag else [],
         ))
 
+        self._session.transition(WorkflowState.SOLVED, f"Answer: {answer[:80]}")
+
         return SolveResult(
             success=True,
             flags=self._found_flags,
@@ -1087,11 +1008,7 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _handle_pivot(self, level: PivotLevel) -> None:
-        """Apply a strategy pivot at the given level.
-
-        Args:
-            level: The pivot escalation level to apply.
-        """
+        """Apply a strategy pivot at the given level."""
         self._cb.on_pivot(level.name, self._pivot.pivot_count)
 
         # Audit: pivot
@@ -1116,7 +1033,6 @@ class Orchestrator:
                 Category.MISC, self._config, is_escalated=True
             )
             self._cb.on_model_change(old_model, self._current_model)
-            # Audit: model switch
             if self._audit:
                 self._audit.log_model_switch(old_model, self._current_model)
 
@@ -1141,27 +1057,21 @@ class Orchestrator:
         category: Category,
         summary: str = "",
     ) -> SolveResult:
-        """Handle found flags and return a success result.
-
-        Args:
-            flags: List of flag strings just found.
-            category: Challenge category.
-            summary: Optional summary text.
-
-        Returns:
-            Successful SolveResult.
-        """
+        """Handle found flags and return a success result."""
         for f in flags:
             if f not in self._found_flags:
                 self._found_flags.append(f)
                 self._cb.on_flag_found(f)
-                # Audit: flag found
                 if self._audit:
                     self._audit.log_flag_found(f)
 
         if self._dashboard:
             for f in flags:
                 self._dashboard.add_flag(f)
+
+        self._session.transition(
+            WorkflowState.SOLVED, f"Flags: {', '.join(flags)}"
+        )
 
         return SolveResult(
             success=True,
@@ -1231,14 +1141,7 @@ class Orchestrator:
         return "\n".join(lines)
 
     def _gather_file_info(self, files: list[Path] | None) -> str:
-        """Gather type information about provided challenge files.
-
-        Args:
-            files: List of file paths.
-
-        Returns:
-            Multi-line string with file name and detected type.
-        """
+        """Gather type information about provided challenge files."""
         if not files:
             return ""
 
@@ -1254,15 +1157,7 @@ class Orchestrator:
     def _build_extra_context(
         self, target_url: str | None, file_info: str
     ) -> str:
-        """Build additional context string for the system prompt.
-
-        Args:
-            target_url: Optional target URL.
-            file_info: File information string.
-
-        Returns:
-            Extra context string.
-        """
+        """Build additional context string for the system prompt."""
         parts: list[str] = []
         parts.append(f"Working directory: {self._workspace}")
         if target_url:

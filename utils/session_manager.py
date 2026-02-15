@@ -20,6 +20,21 @@ from typing import Any
 from utils.logger import get_logger
 
 
+class WorkflowState:
+    """Workflow state constants for crash-safe state tracking.
+
+    Uses plain strings (not Enum) for stable JSON serialization.
+    """
+
+    CREATED = "created"
+    CLASSIFYING = "classifying"
+    PLANNING = "planning"
+    SOLVING = "solving"
+    SOLVED = "solved"
+    FAILED = "failed"
+    PAUSED = "paused"
+
+
 @dataclass
 class StepRecord:
     """One discrete step in the solve session."""
@@ -59,6 +74,8 @@ class SessionData:
     cost: dict[str, Any] = field(default_factory=dict)
     model_used: str = ""
     discoveries: list[str] = field(default_factory=list)
+    workflow_state: str = WorkflowState.CREATED
+    workflow_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 class SessionManager:
@@ -132,6 +149,27 @@ class SessionManager:
                 for f in step.flags_found:
                     if f not in self._data.flags:
                         self._data.flags.append(f)
+
+    def transition(self, new_state: str, detail: str = "") -> None:
+        """Transition the workflow to a new state.
+
+        Appends a history entry recording the transition. Does NOT call
+        save() — the existing iteration-end save covers persistence.
+
+        Args:
+            new_state: Target WorkflowState constant.
+            detail: Optional description of why the transition occurred.
+        """
+        if self._data is None:
+            return
+        old_state = self._data.workflow_state
+        self._data.workflow_state = new_state
+        self._data.workflow_history.append({
+            "from": old_state,
+            "to": new_state,
+            "detail": detail,
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+        })
 
     def update(self, **kwargs: Any) -> None:
         """Update session metadata fields.
