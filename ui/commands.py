@@ -14,22 +14,33 @@ if TYPE_CHECKING:
     from ui.display import Display
 
 
-# Command help descriptions
+# Command help — grouped by function
 COMMAND_HELP: dict[str, str] = {
-    "/help": "Show this help message",
-    "/model [name]": "Show or change the model (gpt-4o, gpt-4o-mini, o3)",
-    "/config": "Show current configuration",
-    "/category [cat]": "Force category (web/pwn/crypto/reverse/forensics/misc)",
+    # Solving
+    "/resume [id|latest]": "Resume a paused session",
+    "/report [list|id]": "Show latest report, list all, or show by session ID",
+    "/audit [id]": "Show audit log (current or by session ID)",
+    # Intelligence
+    "/knowledge [search|clear|export]": "Knowledge base stats or search",
+    "/stats": "Performance dashboard",
+    "/benchmark <file>": "Run benchmark challenges from a JSON file",
+    "/workflow [id]": "Show workflow state history",
+    # Session
     "/file <path>": "Load a file into the workspace",
     "/url <url>": "Set the target URL for the next challenge",
-    "/cost": "Show token usage and cost for this session",
-    "/history": "Show solve history for this session",
-    "/clear": "Clear screen and reset context",
+    "/category [cat]": "Force category (web/pwn/crypto/reverse/forensics/misc)",
     "/save": "Save current session",
     "/load <id>": "Load a saved session",
     "/sessions": "List all saved sessions",
-    "/report [file]": "Generate Markdown report (print or save to file)",
-    "/verbose [on|off]": "Toggle verbose mode (full thinking + tool output)",
+    "/history": "Show solve history for this session",
+    # Settings
+    "/model [name]": "Show or change the model (gpt-4o, gpt-4o-mini, o3)",
+    "/config": "Show current configuration",
+    "/cost": "Show token usage and cost for this session",
+    "/verbose [on|off]": "Toggle verbose mode",
+    "/clear": "Clear screen and reset context",
+    "/mode": "Show pipeline mode",
+    "/help": "Show this help message",
     "/exit, /quit": "Exit with session summary",
 }
 
@@ -75,7 +86,14 @@ def handle_command(
         "/load": _cmd_load,
         "/sessions": _cmd_sessions,
         "/report": _cmd_report,
+        "/resume": _cmd_resume,
+        "/audit": _cmd_audit,
         "/verbose": _cmd_verbose,
+        "/mode": _cmd_mode,
+        "/knowledge": _cmd_knowledge,
+        "/stats": _cmd_stats,
+        "/benchmark": _cmd_benchmark,
+        "/workflow": _cmd_workflow,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -132,6 +150,7 @@ def _cmd_model(arg: str, state: ChatState, display: Display) -> bool:
         tool=state.config.tool,
         docker=state.config.docker,
         log=state.config.log,
+        pipeline=state.config.pipeline,
         sandbox_mode=state.config.sandbox_mode,
     )
     display.show_model_change(old, model)
@@ -319,24 +338,129 @@ def _cmd_sessions(arg: str, state: ChatState, display: Display) -> bool:
 
 
 def _cmd_report(arg: str, state: ChatState, display: Display) -> bool:
+    from pathlib import Path as P
+
+    report_dir = P("reports")
+
+    if arg == "list":
+        # List all reports
+        if not report_dir.exists():
+            display.show_info("No reports found.")
+            return False
+        reports = sorted(report_dir.glob("*.md"), reverse=True)
+        if not reports:
+            display.show_info("No reports found.")
+            return False
+        display.console.print("\n  [bold]Reports:[/bold]")
+        for rp in reports[:20]:
+            display.console.print(f"    [dim]{rp.name}[/dim]")
+        display.console.print()
+        return False
+
+    if arg and arg != "list":
+        # Show report by session ID
+        fpath = report_dir / f"{arg}.md"
+        if not fpath.exists():
+            # Try as filename directly
+            fpath = report_dir / arg
+        if not fpath.exists():
+            display.show_error(f"Report not found: {arg}")
+            return False
+        display.console.print(fpath.read_text(encoding="utf-8"))
+        return False
+
+    # No arg — show latest report
     if not state.last_session_id:
         display.show_info("No active session. Solve a challenge first.")
         return False
 
+    fpath = report_dir / f"{state.last_session_id}.md"
+    if fpath.exists():
+        display.console.print(fpath.read_text(encoding="utf-8"))
+    else:
+        # Fall back to generating from session data
+        from utils.session_manager import SessionManager
+
+        mgr = SessionManager(session_dir=state.config.log.session_dir)
+        md = mgr.export_writeup(session_id=state.last_session_id)
+        display.console.print(md)
+
+    return False
+
+
+def _cmd_resume(arg: str, state: ChatState, display: Display) -> bool:
     from utils.session_manager import SessionManager
 
     mgr = SessionManager(session_dir=state.config.log.session_dir)
-    md = mgr.export_writeup(session_id=state.last_session_id)
 
-    if arg:
-        try:
-            Path(arg).write_text(md, encoding="utf-8")
-            display.show_info(f"Report saved to {arg}")
-        except Exception as exc:
-            display.show_error(f"Failed to save report: {exc}")
+    if not arg or arg == "latest":
+        # Find latest resumable session
+        sid = mgr.find_latest(status_filter="paused")
+        if not sid:
+            sid = mgr.find_latest(status_filter="failed")
+        if not sid:
+            display.show_info("No paused or failed sessions to resume.")
+            return False
     else:
-        display.console.print(md)
+        sid = arg.strip()
 
+    data = mgr.load(sid)
+    if data is None:
+        display.show_error(f"Session not found: {sid}")
+        return False
+
+    if data.status == "solved":
+        display.show_info(
+            f"Session {sid} is already solved. "
+            f"Flags: {', '.join(data.flags) if data.flags else 'None'}"
+        )
+        return False
+
+    display.console.print(
+        f"\n  [bold]Resuming: {data.session_id}[/bold]\n"
+        f"  Status: {data.status}  |  Category: {data.category}\n"
+        f"  Step: {data.current_iteration}\n"
+        f"  Description: {data.description[:80]}\n"
+    )
+    state.resume_session_id = sid
+    display.show_info("Type anything to start solving from where you left off.")
+    return False
+
+
+def _cmd_audit(arg: str, state: ChatState, display: Display) -> bool:
+    from utils.audit_log import read_audit_log, summarize_audit_log, export_audit_csv
+
+    # Parse subcommands: /audit, /audit <id>, /audit export <id>
+    parts = arg.split() if arg else []
+
+    if parts and parts[0] == "export":
+        sid = parts[1] if len(parts) > 1 else state.last_session_id
+        if not sid:
+            display.show_error("No session ID. Usage: /audit export <session_id>")
+            return False
+        entries = read_audit_log(sid, session_dir=state.config.log.session_dir)
+        if not entries:
+            display.show_info(f"No audit log for session {sid}.")
+            return False
+        csv_path = Path("reports") / f"{sid}_audit.csv"
+        export_audit_csv(entries, csv_path)
+        display.show_info(f"Audit exported to {csv_path}")
+        return False
+
+    sid = parts[0] if parts else state.last_session_id
+    if not sid:
+        display.show_info("No active session. Usage: /audit <session_id>")
+        return False
+
+    entries = read_audit_log(sid, session_dir=state.config.log.session_dir)
+    if not entries:
+        display.show_info(f"No audit log for session {sid}.")
+        return False
+
+    summary = summarize_audit_log(entries)
+    display.console.print(f"\n[bold]Audit Log: {sid}[/bold]\n")
+    display.console.print(summary)
+    display.console.print()
     return False
 
 
@@ -354,6 +478,233 @@ def _cmd_verbose(arg: str, state: ChatState, display: Display) -> bool:
     set_console_verbose(state.verbose)
     status = "ON" if state.verbose else "OFF"
     display.show_info(f"Verbose mode: {status}")
+    return False
+
+
+def _cmd_mode(arg: str, state: ChatState, display: Display) -> bool:
+    display.show_info("Single-agent mode (multi-agent pipeline removed)")
+    return False
+
+
+def _cmd_knowledge(arg: str, state: ChatState, display: Display) -> bool:
+    from knowledge.base import KnowledgeBase
+    from rich.table import Table
+
+    kb = KnowledgeBase()
+    parts = arg.split(maxsplit=1) if arg else []
+    subcmd = parts[0].lower() if parts else ""
+
+    if subcmd == "search":
+        query = parts[1] if len(parts) > 1 else ""
+        if not query:
+            display.show_error("Usage: /knowledge search <query>")
+            return False
+        results = kb.search(query, limit=5)
+        if not results:
+            display.show_info(f"No matches for: {query}")
+            return False
+        table = Table(title=f"Knowledge: \"{query}\"")
+        table.add_column("Challenge", max_width=40)
+        table.add_column("Category")
+        table.add_column("Techniques", max_width=30)
+        table.add_column("Steps", justify="right")
+        table.add_column("Cost", justify="right")
+        for r in results:
+            table.add_row(
+                r.get("challenge", "?")[:40],
+                r.get("category", "?"),
+                ", ".join(r.get("techniques", [])[:3]),
+                str(r.get("steps", "?")),
+                f"${r.get('cost', 0):.3f}",
+            )
+        display.console.print(table)
+        return False
+
+    if subcmd == "clear":
+        count = len(kb.entries)
+        if count == 0:
+            display.show_info("Knowledge base is already empty.")
+            return False
+        kb.clear()
+        display.show_info(f"Cleared {count} entries from knowledge base.")
+        return False
+
+    if subcmd == "export":
+        path = kb.export()
+        display.show_info(f"Knowledge exported to {path}")
+        return False
+
+    # Default: show stats
+    stats = kb.get_stats()
+    if stats["total"] == 0:
+        display.show_info("Knowledge base is empty. Solve some challenges first!")
+        return False
+
+    display.console.print(f"\n  [bold]Knowledge Base[/bold]")
+    display.console.print(
+        f"  Entries: {stats['total']}  |  "
+        f"Successful: {stats['success']}"
+    )
+    if stats["by_category"]:
+        cats = ", ".join(
+            f"{k}: {v}" for k, v in sorted(stats["by_category"].items())
+        )
+        display.console.print(f"  Categories: {cats}")
+    if stats["top_techniques"]:
+        techs = ", ".join(list(stats["top_techniques"].keys())[:5])
+        display.console.print(f"  Top techniques: {techs}")
+    if stats["top_tools"]:
+        tools = ", ".join(list(stats["top_tools"].keys())[:5])
+        display.console.print(f"  Top tools: {tools}")
+    display.console.print()
+    return False
+
+
+def _cmd_stats(arg: str, state: ChatState, display: Display) -> bool:
+    from stats.tracker import StatsTracker
+    from rich.table import Table
+
+    tracker = StatsTracker()
+    dashboard = tracker.get_dashboard()
+
+    if "message" in dashboard:
+        display.show_info(dashboard["message"])
+        return False
+
+    overall = dashboard["overall"]
+    streaks = dashboard["streaks"]
+    recent = dashboard["recent_7d"]
+
+    display.console.print(f"\n  [bold]Q Stats[/bold]")
+    display.console.print(
+        f"  Overall: {overall['total']} challenges - "
+        f"{overall['success']} solved ({overall['rate']})"
+    )
+    display.console.print(
+        f"  Cost: {overall['total_cost']} total - "
+        f"{overall['avg_cost']} avg"
+    )
+    streak_str = f"  Streak: {streaks['current']} wins"
+    if streaks["best"] > streaks["current"]:
+        streak_str += f" - Best: {streaks['best']}"
+    display.console.print(streak_str)
+
+    categories = dashboard.get("categories", {})
+    if categories:
+        table = Table()
+        table.add_column("Category")
+        table.add_column("Solved")
+        table.add_column("Rate")
+        table.add_column("Avg Steps", justify="right")
+        table.add_column("Avg Cost", justify="right")
+        for cat, data in categories.items():
+            table.add_row(
+                cat,
+                data["solved"],
+                data["rate"],
+                data["avg_steps"],
+                data["avg_cost"],
+            )
+        display.console.print(table)
+
+    display.console.print(
+        f"  Last 7 days: {recent['solves']} solves - "
+        f"{recent['success']} success"
+    )
+    display.console.print()
+    return False
+
+
+def _cmd_benchmark(arg: str, state: ChatState, display: Display) -> bool:
+    if not arg:
+        display.show_error("Usage: /benchmark <challenges.json>")
+        return False
+
+    from pathlib import Path as P
+
+    fpath = P(arg.strip())
+    if not fpath.exists():
+        display.show_error(f"File not found: {fpath}")
+        return False
+
+    from benchmark.runner import BenchmarkRunner
+    from rich.table import Table
+
+    display.show_info(f"Running benchmark: {fpath}")
+
+    try:
+        runner = BenchmarkRunner(challenges_file=fpath)
+        results = runner.run()
+        summary = runner.summarize(results)
+    except Exception as exc:
+        display.show_error(f"Benchmark failed: {exc}")
+        return False
+
+    table = Table(title="Benchmark Results")
+    table.add_column("ID", style="dim")
+    table.add_column("Name", max_width=30)
+    table.add_column("Passed")
+    table.add_column("Steps", justify="right")
+    table.add_column("Cost", justify="right")
+
+    for r in results:
+        style = "green" if r.passed else "red"
+        table.add_row(
+            r.id,
+            r.name,
+            f"[{style}]{'PASS' if r.passed else 'FAIL'}[/{style}]",
+            f"{r.steps}/{r.max_steps}",
+            f"${r.cost:.4f}",
+        )
+
+    display.console.print(table)
+    display.console.print(
+        f"\nPassed: {summary['passed']}/{summary['total_challenges']}  |  "
+        f"Pass rate: {summary['pass_rate']}  |  "
+        f"Cost: ${summary['total_cost_usd']:.4f}"
+    )
+    return False
+
+
+def _cmd_workflow(arg: str, state: ChatState, display: Display) -> bool:
+    from utils.session_manager import SessionManager
+    from rich.table import Table
+
+    sid = arg.strip() if arg else state.last_session_id
+    if not sid:
+        display.show_error("Usage: /workflow <session_id>")
+        return False
+
+    mgr = SessionManager(session_dir=state.config.log.session_dir)
+    data = mgr.load(sid)
+    if data is None:
+        display.show_error(f"Session not found: {sid}")
+        return False
+
+    display.console.print(
+        f"\n  [bold]Workflow: {sid}[/bold]\n"
+        f"  Current state: [cyan]{data.workflow_state}[/cyan]\n"
+    )
+
+    if not data.workflow_history:
+        display.show_info("No workflow transitions recorded.")
+        return False
+
+    table = Table(title="Workflow History")
+    table.add_column("From", style="dim")
+    table.add_column("To", style="cyan")
+    table.add_column("Detail", max_width=50)
+    table.add_column("Timestamp")
+
+    for entry in data.workflow_history:
+        table.add_row(
+            entry.get("from", "?"),
+            entry.get("to", "?"),
+            entry.get("detail", ""),
+            entry.get("timestamp", "")[:19],
+        )
+
+    display.console.print(table)
     return False
 
 

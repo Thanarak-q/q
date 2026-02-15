@@ -18,39 +18,54 @@ from tools.shell import ShellTool
 from utils.logger import get_logger
 
 
+def _has_binary_chars(data: str) -> bool:
+    """Check if string contains non-text binary characters."""
+    binary_count = sum(
+        1 for ch in data[:500]
+        if ord(ch) < 32 and ch not in "\n\r\t"
+    )
+    return binary_count > len(data[:500]) * 0.1
+
+
 def _smart_truncate(output: str, max_chars: int) -> str:
     """Truncate tool output intelligently based on content type.
 
-    - Hex / binary data → aggressive truncation (500 chars) + summary.
+    - Binary data → immediate summary.
+    - Hex / binary data → aggressive truncation (200 chars) + summary.
     - HTML → strip tags, keep text.
     - Repeated lines → deduplicate.
-    - Everything else → normal truncation.
+    - Same-as-previous detection is handled at the orchestrator level.
+    - Everything else → normal truncation with char count.
     """
     if len(output) <= max_chars:
         return output
+
+    # Detect binary data (non-printable chars)
+    if _has_binary_chars(output):
+        return (
+            f"Binary data ({len(output)} bytes). "
+            f"Use file_manager with read action for details."
+        )
 
     # Detect hex dumps (lines of hex like "00 4a 2f ...")
     hex_pattern = re.compile(r"^[0-9a-fA-F\s:.|]{20,}$", re.MULTILINE)
     hex_matches = hex_pattern.findall(output)
     if len(hex_matches) > 10:
-        # Heavy hex content — truncate aggressively
-        limit = min(500, max_chars)
+        limit = min(200, max_chars)
         return (
             output[:limit]
-            + f"\n\n[TRUNCATED: hex/binary data, showing first {limit} chars "
-            f"of {len(output)} total]"
+            + f"\n... (truncated, {len(output)} chars total)"
         )
 
     # Detect HTML content
     if "<html" in output.lower() or "<body" in output.lower():
-        # Strip HTML tags to keep just text
         stripped = re.sub(r"<[^>]+>", " ", output)
         stripped = re.sub(r"\s+", " ", stripped).strip()
         if len(stripped) <= max_chars:
             return f"[HTML tags stripped]\n{stripped}"
         return (
             f"[HTML tags stripped]\n{stripped[:max_chars]}"
-            f"\n\n[TRUNCATED at {max_chars} chars]"
+            f"\n... (truncated, showing {max_chars}/{len(stripped)} chars)"
         )
 
     # Deduplicate repeated lines
@@ -68,12 +83,15 @@ def _smart_truncate(output: str, max_chars: int) -> str:
                 suppressed += 1
         if suppressed > 0:
             output = "\n".join(deduped)
-            output += f"\n\n[{suppressed} duplicate lines suppressed]"
+            output += f"\n[{suppressed} duplicate lines suppressed]"
             if len(output) <= max_chars:
                 return output
 
     # Default truncation
-    return output[:max_chars] + f"\n\n[TRUNCATED at {max_chars} chars]"
+    return (
+        output[:max_chars]
+        + f"\n... (truncated, showing {max_chars}/{len(output)} chars)"
+    )
 
 
 class ToolRegistry:
@@ -103,6 +121,45 @@ class ToolRegistry:
         self.register(FileManagerTool(workspace=workspace, docker_manager=docker_manager))
         self.register(NetworkTool())
         self.register(AnswerUserTool())
+
+        from tools.browser import BrowserTool
+        self.register(BrowserTool())
+
+    @classmethod
+    def from_subset(
+        cls,
+        tool_names: list[str],
+        docker_manager: Optional[Any] = None,
+        workspace: Optional[Any] = None,
+    ) -> "ToolRegistry":
+        """Create a registry with only the specified tools.
+
+        Useful for pipeline agents that need a restricted tool set.
+
+        Args:
+            tool_names: List of tool names to include.
+            docker_manager: Docker sandbox manager.
+            workspace: Workspace path.
+
+        Returns:
+            A ToolRegistry with only the requested tools registered.
+        """
+        full = cls(docker_manager=docker_manager, workspace=workspace)
+        filtered = cls.__new__(cls)
+        filtered._tools = {}
+        filtered._log = get_logger()
+
+        for name in tool_names:
+            tool = full.get(name)
+            if tool:
+                filtered._tools[name] = tool
+
+        # Register submit_deliverable if requested but not in the full set
+        if "submit_deliverable" in tool_names and "submit_deliverable" not in filtered._tools:
+            from tools.submit_deliverable import SubmitDeliverableTool
+            filtered._tools["submit_deliverable"] = SubmitDeliverableTool()
+
+        return filtered
 
     def register(self, tool: BaseTool) -> None:
         """Register a tool instance.

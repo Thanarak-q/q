@@ -1,0 +1,24 @@
+[
+  {
+    "id": "crypto_001",
+    "name": "Base64 Chain",
+    "category": "crypto",
+    "description": "Decode this multi-layered Base64 string to find the flag: Wm14aFozdGlZWE5sTmpSZlkya3BWR2d6Y2w5bWJHRm5mUT09",
+    "files": [],
+    "expected_answer": "flag{base64_ci",
+    "match_type": "contains",
+    "max_steps": 4,
+    "max_cost": 0.05
+  },
+  {
+    "id": "misc_001",
+    "name": "ROT13 Decode",
+    "category": "misc",
+    "description": "Decode the following ROT13-encoded flag: synt{ebg13_vf_abg_rapelcgvba}",
+    "files": [],
+    "expected_answer": "flag{rot13_is_not_encryption}",
+    "match_type": "exact",
+    "max_steps": 3,
+    "max_cost": 0.03
+  }
+]

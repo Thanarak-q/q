@@ -22,6 +22,47 @@ Container = Any
 DockerClient = Any
 
 
+def detect_sandbox_mode() -> str:
+    """Auto-detect the best available sandbox mode.
+
+    Returns:
+        ``"docker"`` if Docker is available without sudo,
+        ``"docker_sudo"`` if Docker requires sudo,
+        ``"local"`` if Docker is not available.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("docker"):
+        return "local"
+
+    # Try without sudo
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return "docker"
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Try with sudo (non-interactive only)
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "docker", "info"],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return "docker_sudo"
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    return "local"
+
+
 class DockerSandbox:
     """Manage a Docker container as an isolated execution sandbox.
 

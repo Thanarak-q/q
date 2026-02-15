@@ -311,15 +311,28 @@ def cmd_resume(args: argparse.Namespace) -> None:
     setup_logger(level=config.log.level, log_dir=config.log.log_dir)
 
     mgr = SessionManager(session_dir=config.log.session_dir)
-    data = mgr.load(args.resume)
+
+    # Support --resume latest
+    resume_id = args.resume
+    if resume_id == "latest":
+        sid = mgr.find_latest(status_filter="paused")
+        if not sid:
+            sid = mgr.find_latest(status_filter="failed")
+        if not sid:
+            _console.print("[error]No paused or failed sessions to resume.[/error]")
+            sys.exit(1)
+        resume_id = sid
+        _console.print(f"[info]Resuming latest session: {resume_id}[/info]")
+
+    data = mgr.load(resume_id)
 
     if data is None:
-        _console.print(f"[error]Session {args.resume} not found.[/error]")
+        _console.print(f"[error]Session {resume_id} not found.[/error]")
         sys.exit(1)
 
     if data.status == "solved":
         _console.print(
-            f"[info]Session {args.resume} is already solved. "
+            f"[info]Session {resume_id} is already solved. "
             f"Flags: {', '.join(data.flags)}[/info]"
         )
         sys.exit(0)
@@ -329,7 +342,7 @@ def cmd_resume(args: argparse.Namespace) -> None:
         f"Category: {data.category}  |  Status: {data.status}\n"
         f"Iterations: {data.current_iteration}  |  "
         f"Flags: {', '.join(data.flags) if data.flags else 'None'}",
-        title=f"Resuming: {args.resume}",
+        title=f"Resuming: {resume_id}",
         style="cyan",
     ))
 
@@ -345,7 +358,7 @@ def cmd_resume(args: argparse.Namespace) -> None:
             session_manager=mgr,
         )
 
-        result = orch.resume(session_id=args.resume)
+        result = orch.resume(session_id=resume_id)
 
         _console.print()
         if result.success and result.flags:
@@ -448,6 +461,66 @@ def cmd_tools(args: argparse.Namespace) -> None:
 
 
 # ------------------------------------------------------------------
+# Benchmark
+# ------------------------------------------------------------------
+
+
+def cmd_benchmark(args: argparse.Namespace) -> None:
+    """Run benchmark challenges and display results."""
+    from benchmark.runner import BenchmarkRunner
+    from config import load_config
+    from utils.logger import setup_logger
+
+    _console.print(f"[bold]q v{VERSION}[/bold] — Benchmark Mode\n")
+
+    config = load_config()
+    setup_logger(level=config.log.level, log_dir=config.log.log_dir)
+
+    runner = BenchmarkRunner(
+        challenges_file=args.benchmark,
+        budget_override=args.budget,
+    )
+
+    results = runner.run()
+    summary = runner.summarize(results)
+
+    # Rich table output
+    table = Table(title="Benchmark Results")
+    table.add_column("ID", style="dim")
+    table.add_column("Name", max_width=30)
+    table.add_column("Category")
+    table.add_column("Passed")
+    table.add_column("Budget")
+    table.add_column("Steps", justify="right")
+    table.add_column("Cost", justify="right")
+    table.add_column("Time", justify="right")
+    table.add_column("Answer", max_width=30)
+
+    for r in results:
+        pass_style = "green" if r.passed else "red"
+        budget_style = "green" if r.within_budget else "yellow"
+        table.add_row(
+            r.id,
+            r.name,
+            r.category,
+            f"[{pass_style}]{'PASS' if r.passed else 'FAIL'}[/{pass_style}]",
+            f"[{budget_style}]{'OK' if r.within_budget else 'OVER'}[/{budget_style}]",
+            f"{r.steps}/{r.max_steps}",
+            f"${r.cost:.4f}",
+            f"{r.duration:.1f}s",
+            (r.answer[:28] + "..") if len(r.answer) > 30 else r.answer,
+        )
+
+    _console.print(table)
+    _console.print(
+        f"\nPassed: {summary['passed']}/{summary['total_challenges']}  |  "
+        f"Pass rate: {summary['pass_rate']}  |  "
+        f"Total cost: ${summary['total_cost_usd']:.4f}  |  "
+        f"Duration: {summary['total_duration_s']:.1f}s"
+    )
+
+
+# ------------------------------------------------------------------
 # Docker helper
 # ------------------------------------------------------------------
 
@@ -526,6 +599,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List all available agent tools.",
     )
+    group.add_argument(
+        "--benchmark",
+        metavar="FILE",
+        help="Run benchmark challenges from a JSON file.",
+    )
 
     # Options for batch/replay/writeup
     parser.add_argument(
@@ -559,6 +637,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Enable verbose output (full LLM thinking and tool output).",
     )
+    # --mode kept for backward compat but ignored (always single agent)
+    parser.add_argument(
+        "--mode",
+        choices=["auto", "single", "multi"],
+        default=None,
+        help=argparse.SUPPRESS,  # hidden — single agent only now
+    )
 
     return parser
 
@@ -588,6 +673,8 @@ def main() -> None:
         cmd_build(args)
     elif args.tools:
         cmd_tools(args)
+    elif args.benchmark:
+        cmd_benchmark(args)
     else:
         # Default: interactive chat mode
         from ui.chat import chat_loop

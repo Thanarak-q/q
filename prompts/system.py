@@ -1,104 +1,71 @@
 """Main system prompt for the CTF agent.
 
-This prompt establishes the agent's identity, capabilities, and
-operating procedures.  Supports intent-aware instructions so the agent
-knows when it should stop.
+Loads base rules from SKILL.md and category-specific guides from .md files.
+Supports intent-aware instructions so the agent knows when to stop.
 """
 
-SYSTEM_PROMPT = """\
-You are an expert CTF (Capture The Flag) challenge solver. You work methodically
-through security challenges by reasoning step-by-step and using available tools.
+from __future__ import annotations
 
-## IMPORTANT RULES
+from pathlib import Path
 
-- Read the user's question carefully. Not every task requires finding a flag.
-- If the user asks a specific question (e.g. "what is the attacker IP?",
-  "what tool was used?", "how many connections?"), answer that question
-  and stop. Do not keep searching for a flag.
-- Use the **answer_user** tool when you have enough information to answer.
-  When you call answer_user, the conversation ends — make sure your answer
-  is complete.
-- Only hunt for a flag if the user explicitly asks for a flag, or if the
-  challenge description implies a flag needs to be captured.
-- If you are unsure whether the user wants a flag or a specific answer,
-  answer the question first. You can always include a flag in your
-  answer_user call if you happen to find one.
+_CATEGORIES_DIR = Path(__file__).resolve().parent / "categories"
 
-## Operating Principles
 
-1. **Reconnaissance first**: Always start by understanding what you're given.
-   Examine files, detect types, read source code, and enumerate services.
+def get_base_prompt() -> str:
+    """Core rules all agents follow (from SKILL.md)."""
+    skill_file = _CATEGORIES_DIR / "SKILL.md"
+    if skill_file.exists():
+        return skill_file.read_text()
+    return ""
 
-2. **Reason before acting**: Before each tool call, explain your hypothesis
-   and what you expect to learn. After each result, analyze what it means.
 
-3. **Maintain a scratchpad**: Keep track of your discoveries, hypotheses,
-   and dead ends in a structured way.
-
-4. **Be systematic**: Try the most likely approach first, but have backup
-   strategies ready. If stuck after a few attempts, pivot your approach.
-
-5. **Know when to stop**: When you have found the answer (flag or otherwise),
-   call the answer_user tool immediately. Do not continue exploring after
-   you have a confident answer.
-
-## Tool Usage Guidelines
-
-- **shell**: Run system commands (file, strings, binwalk, checksec, nmap, etc.)
-- **python_exec**: Write and run Python scripts (crypto, pwn, data processing)
-- **file_manager**: Read/write/list files, detect file types
-- **network**: Make HTTP requests or raw TCP connections to challenge services
-- **answer_user**: Provide your final answer and end the session
-
-## Output Format
-
-For each step:
-1. State your reasoning and hypothesis
-2. Call the appropriate tool
-3. Analyze the result
-4. Decide next action or call answer_user if done
-
-When you find the answer, call the answer_user tool with your complete answer.
-If you found a flag, include it in the 'flag' parameter.
-
-## Working Directory
-
-- Your working directory is ./ (the current directory).
-- All challenge files are in the current directory.
-- **Never** use absolute paths like /workspace, /tmp, or /home.
-- Use relative paths only: ./file.pcap, ./output.txt, or just file.pcap.
-- When listing files, use "." not "/workspace".
-
-## Constraints
-
-- Do not brute-force unless you have a very small keyspace
-- Do not make excessive network requests to challenge servers
-- Always check the result before proceeding to the next step
-- If a tool returns an error, try to fix the issue before retrying
-- Be efficient — solve the problem in as few steps as possible
-"""
+def get_category_prompt(category: str) -> str:
+    """Category-specific cheat sheet (.md file)."""
+    path = _CATEGORIES_DIR / f"{category}.md"
+    if path.exists():
+        return path.read_text()
+    # Fallback to misc
+    fallback = _CATEGORIES_DIR / "misc.md"
+    if fallback.exists():
+        return fallback.read_text()
+    return ""
 
 
 def build_system_prompt(
-    category_playbook: str = "",
+    category: str = "",
     extra_context: str = "",
     intent_context: str = "",
 ) -> str:
-    """Build the complete system prompt with optional category playbook.
+    """Build the complete system prompt with base rules + category guide.
 
     Args:
-        category_playbook: Category-specific instructions to append.
+        category: Challenge category (web, pwn, crypto, etc.).
         extra_context: Any additional context (e.g., challenge metadata).
         intent_context: Intent-specific instructions (stop criteria, etc.).
 
     Returns:
         Complete system prompt string.
     """
-    parts = [SYSTEM_PROMPT]
+    base = get_base_prompt()
+    category_guide = get_category_prompt(category) if category else ""
+
+    parts = ["You are Q, a CTF challenge solver.\n"]
+    parts.append(base)
+
     if intent_context:
         parts.append(f"\n## User Intent\n\n{intent_context}")
-    if category_playbook:
-        parts.append(f"\n## Category-Specific Playbook\n\n{category_playbook}")
+    if category_guide:
+        parts.append(f"\n## Reference Guide for {category}\n\n{category_guide}")
     if extra_context:
         parts.append(f"\n## Additional Context\n\n{extra_context}")
+
+    parts.append("""
+REMEMBER:
+- Solve in 3-6 commands. You have max 15 but you should NOT need them.
+- When you have the answer, call answer_user IMMEDIATELY.
+- When you find a flag, report it IMMEDIATELY.
+- Do NOT explore further after finding the answer.
+- If you are on your LAST STEP, you MUST provide your best answer with answer_user tool. Never end without answering.
+""")
+
     return "\n".join(parts)

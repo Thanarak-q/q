@@ -1,12 +1,15 @@
 """Session persistence — save, load, list, and export sessions.
 
 Each session captures the full state of a solve attempt so it can be
-resumed, replayed, or exported as a writeup.
+resumed, replayed, or exported as a writeup.  Writes are atomic
+(write to .tmp then rename) to prevent data loss on crash.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -15,6 +18,21 @@ from pathlib import Path
 from typing import Any
 
 from utils.logger import get_logger
+
+
+class WorkflowState:
+    """Workflow state constants for crash-safe state tracking.
+
+    Uses plain strings (not Enum) for stable JSON serialization.
+    """
+
+    CREATED = "created"
+    CLASSIFYING = "classifying"
+    PLANNING = "planning"
+    SOLVING = "solving"
+    SOLVED = "solved"
+    FAILED = "failed"
+    PAUSED = "paused"
 
 
 @dataclass
@@ -56,6 +74,8 @@ class SessionData:
     cost: dict[str, Any] = field(default_factory=dict)
     model_used: str = ""
     discoveries: list[str] = field(default_factory=list)
+    workflow_state: str = WorkflowState.CREATED
+    workflow_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 class SessionManager:
@@ -130,6 +150,27 @@ class SessionManager:
                     if f not in self._data.flags:
                         self._data.flags.append(f)
 
+    def transition(self, new_state: str, detail: str = "") -> None:
+        """Transition the workflow to a new state.
+
+        Appends a history entry recording the transition. Does NOT call
+        save() — the existing iteration-end save covers persistence.
+
+        Args:
+            new_state: Target WorkflowState constant.
+            detail: Optional description of why the transition occurred.
+        """
+        if self._data is None:
+            return
+        old_state = self._data.workflow_state
+        self._data.workflow_state = new_state
+        self._data.workflow_history.append({
+            "from": old_state,
+            "to": new_state,
+            "detail": detail,
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+        })
+
     def update(self, **kwargs: Any) -> None:
         """Update session metadata fields.
 
@@ -144,7 +185,9 @@ class SessionManager:
         self._data.updated_at = datetime.now(tz=timezone.utc).isoformat()
 
     def save(self) -> Path | None:
-        """Write the session to disk.
+        """Write the session to disk with atomic write.
+
+        Uses a temporary file + rename to prevent corruption on crash.
 
         Returns:
             Path to the saved file, or None on failure.
@@ -153,10 +196,26 @@ class SessionManager:
             return None
         fpath = self._dir / f"{self._data.session_id}.json"
         try:
-            fpath.write_text(
-                json.dumps(asdict(self._data), indent=2, ensure_ascii=False, default=str),
-                encoding="utf-8",
+            content = json.dumps(
+                asdict(self._data), indent=2, ensure_ascii=False, default=str
             )
+            # Atomic write: write to .tmp then rename
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(self._dir), suffix=".tmp", prefix=".session_"
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_fh:
+                    tmp_fh.write(content)
+                    tmp_fh.flush()
+                    os.fsync(tmp_fh.fileno())
+                os.replace(tmp_path, str(fpath))
+            except Exception:
+                # Clean up temp file on failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             self._log.debug(f"Session saved: {fpath}")
             return fpath
         except Exception as exc:
@@ -211,6 +270,29 @@ class SessionManager:
             except Exception:
                 continue
         return sessions
+
+    def find_latest(self, status_filter: str | None = None) -> str | None:
+        """Find the most recent session ID.
+
+        Args:
+            status_filter: If given, only consider sessions with this status
+                (e.g. 'paused', 'in_progress', 'failed').
+
+        Returns:
+            Session ID string, or None if no sessions exist.
+        """
+        sessions = self.list_sessions()
+        if not sessions:
+            return None
+        if status_filter:
+            sessions = [s for s in sessions if s.get("status") == status_filter]
+        if not sessions:
+            return None
+        return sessions[0].get("session_id")
+
+    def get_session_data(self) -> SessionData | None:
+        """Return the currently loaded session data."""
+        return self._data
 
     def export_writeup(self, session_id: str | None = None) -> str:
         """Export a session as a Markdown writeup.

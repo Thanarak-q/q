@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import signal
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -225,6 +226,13 @@ class ChatCallbacks(AgentCallbacks):
     def on_budget_warning(self, warning: str) -> None:
         self._display.console.print(f"│  [warning]{warning}[/warning]")
 
+    # -- Report ----------------------------------------------------
+
+    def on_report_saved(self, path: str) -> None:
+        self._display.console.print(
+            f"[dim]\U0001f4c4 Report: {path}[/dim]"
+        )
+
     # -- User interaction ------------------------------------------
 
     def on_ask_user(self, prompt: str) -> str:
@@ -234,6 +242,42 @@ class ChatCallbacks(AgentCallbacks):
             return hint
         except (KeyboardInterrupt, EOFError):
             return ""
+
+    # -- Multi-agent pipeline callbacks ----------------------------
+
+    def on_agent_start(self, agent_role: str, model: str) -> None:
+        self._tree.set_root(f"\u25c6 {agent_role.capitalize()} ({model})")
+        self._root_set = True
+
+    def on_agent_done(self, agent_role: str, summary: str, success: bool) -> None:
+        if summary:
+            self._tree.add_completed_node(
+                f"{summary[:120]}",
+                success=success,
+            )
+
+    def on_pipeline_phase(
+        self, phase: str, detail: str, is_fast_path: bool = False
+    ) -> None:
+        label = phase.capitalize()
+        if is_fast_path:
+            label += " [fast-path]"
+        self._display.show_info(f"\u25c6 {label}: {detail}")
+
+    def on_parallel_start(self, count: int) -> None:
+        self._tree.add_completed_node(
+            f"Launching {count} parallel solvers",
+            success=True,
+        )
+
+    def on_parallel_result(
+        self, index: int, success: bool, summary: str
+    ) -> None:
+        icon = "\u2713" if success else "\u2717"
+        self._tree.add_completed_node(
+            f"Solver #{index}: {icon} {summary[:100]}",
+            success=success,
+        )
 
 
 # ------------------------------------------------------------------
@@ -300,15 +344,30 @@ def read_input(display: Display) -> str | None:
 def setup_docker(config: AppConfig) -> Any:
     """Attempt to start the Docker sandbox silently.
 
+    Uses auto-detection to find the best sandbox mode.
     Returns the DockerSandbox manager on success, None on failure.
     Errors are logged to file only — no console output.
     """
-    if config.sandbox_mode != "docker":
-        return None
-
     from utils.logger import get_logger
 
     log = get_logger()
+
+    # Auto-detect if configured for docker
+    if config.sandbox_mode == "docker":
+        try:
+            from sandbox.docker_manager import detect_sandbox_mode
+
+            detected = detect_sandbox_mode()
+            log.info(f"Sandbox auto-detect: {detected}")
+            if detected == "local":
+                log.info("Docker unavailable — falling back to local execution.")
+                return None
+        except Exception:
+            pass
+
+    if config.sandbox_mode not in ("docker", "docker_sudo"):
+        return None
+
     try:
         from sandbox.docker_manager import DockerSandbox
 
@@ -353,11 +412,23 @@ def run_solve(
     state.solving = True
     callbacks.reset_for_new_solve()
 
-    # Set up Ctrl+C to cancel the agent (not exit the program)
+    # Set up Ctrl+C: first press = cancel agent + save state,
+    # second press within 2s = exit program
     original_handler = signal.getsignal(signal.SIGINT)
+    _last_ctrl_c: list[float] = [0.0]
 
     def cancel_handler(signum, frame):
-        display.console.print("\n  [warning]Cancelling...[/warning]")
+        now = time.time()
+        if now - _last_ctrl_c[0] < 2.0:
+            # Double Ctrl+C — exit immediately
+            display.console.print("\n  [warning]Exiting...[/warning]")
+            signal.signal(signal.SIGINT, original_handler)
+            raise KeyboardInterrupt
+        _last_ctrl_c[0] = now
+        display.console.print(
+            "\n  [warning]Agent stopped. Session saved. "
+            "/resume to continue[/warning]"
+        )
         orch.cancel()
 
     signal.signal(signal.SIGINT, cancel_handler)
@@ -437,7 +508,11 @@ def run_solve(
 
 
 def chat_loop(verbose: bool = False) -> None:
-    """Run the main interactive chat loop."""
+    """Run the main interactive chat loop.
+
+    Args:
+        verbose: Enable verbose output.
+    """
     # Load config
     config = load_config()
     setup_logger(

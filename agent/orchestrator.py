@@ -1,12 +1,10 @@
-"""Main ReAct agent loop (orchestrator).
+"""Single-agent ReAct loop (orchestrator).
 
-Coordinates the classify -> plan -> solve loop, dispatching tool calls
+Coordinates the classify -> solve loop, dispatching tool calls
 and managing the agent's state until a flag is found, the agent calls
 answer_user, or limits are hit.
 
-Integrates: multi-model selection, graduated pivot system, cost tracking,
-session persistence, intent-aware stop conditions, optional Rich live
-dashboard, and callback-driven interactive UI support.
+Architecture: Classifier -> Single Agent (with skill cheat sheet) -> Auto Report
 """
 
 from __future__ import annotations
@@ -14,7 +12,7 @@ from __future__ import annotations
 import json
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,7 +24,6 @@ from agent.classifier import (
     UserIntent,
     classify_challenge,
     classify_intent,
-    get_playbook,
     max_steps_for_intent,
 )
 from agent.context_manager import ContextManager
@@ -39,12 +36,14 @@ from agent.planner import (
 from config import AppConfig, load_config
 from prompts.strategies import FINAL_ATTEMPT_PROMPT
 from prompts.system import build_system_prompt
+from report.generator import generate_report, save_report
 from tools.registry import ToolRegistry
+from utils.audit_log import AuditLogger
 from utils.cost_tracker import CostTracker
 from utils.dashboard import Dashboard
 from utils.flag_extractor import extract_flags
 from utils.logger import console, get_logger
-from utils.session_manager import SessionManager, StepRecord
+from utils.session_manager import SessionManager, StepRecord, WorkflowState
 
 
 # ------------------------------------------------------------------
@@ -118,6 +117,9 @@ class AgentCallbacks(ABC):
     def on_iteration(self, current: int, total: int) -> None:
         """Called at the start of each iteration."""
 
+    def on_report_saved(self, path: str) -> None:
+        """Called when a solve report is saved to disk."""
+
     def on_ask_user(self, prompt: str) -> str:
         """Called when the agent needs a hint from the user.
 
@@ -183,6 +185,9 @@ class NullCallbacks(AgentCallbacks):
     def on_iteration(self, current: int, total: int) -> None:
         console.rule(f"[step]Iteration {current}/{total}[/step]")
 
+    def on_report_saved(self, path: str) -> None:
+        console.print(f"[result]Report saved: {path}[/result]")
+
 
 # ------------------------------------------------------------------
 # SolveResult
@@ -212,12 +217,14 @@ class SolveResult:
 
 
 class Orchestrator:
-    """The main ReAct agent that solves CTF challenges.
+    """Single-agent CTF solver.
 
     Implements the observe-think-act loop with automatic tool dispatch,
     context management, graduated strategy pivoting, multi-model
     selection, cost tracking, session persistence, and callback-driven
     UI integration.
+
+    Architecture: Classifier -> Single Agent (with skill cheat sheet) -> Auto Report
     """
 
     def __init__(
@@ -231,21 +238,10 @@ class Orchestrator:
         callbacks: AgentCallbacks | None = None,
         cost_tracker: CostTracker | None = None,
     ) -> None:
-        """Initialise the orchestrator.
-
-        Args:
-            config: Application configuration (loaded from env if None).
-            docker_manager: Optional Docker sandbox manager.
-            workspace: Workspace directory for file operations.
-            session_manager: Optional session persistence manager.
-            dashboard: Optional pre-built dashboard instance.
-            enable_dashboard: If True and no dashboard given, create one.
-            callbacks: Optional UI callback handler.
-            cost_tracker: Optional shared cost tracker (for session accumulation).
-        """
         self._config = config or load_config()
         self._client = OpenAI(api_key=self._config.model.api_key)
         self._workspace = workspace or Path.cwd()
+        self._docker = docker_manager
         self._registry = ToolRegistry(
             docker_manager=docker_manager,
             workspace=self._workspace,
@@ -257,6 +253,8 @@ class Orchestrator:
         self._custom_flag_pattern: str | None = None
         self._cancelled = False
         self._intent: IntentResult | None = None
+        self._start_time: float = 0.0
+        self._audit: AuditLogger | None = None
 
         # Callbacks (use NullCallbacks for backward compat)
         self._cb: AgentCallbacks = callbacks or NullCallbacks()
@@ -314,8 +312,8 @@ class Orchestrator:
     ) -> SolveResult:
         """Solve a CTF challenge.
 
-        This is the main entry point.  It classifies the challenge,
-        creates a plan, then enters the ReAct loop.
+        This is the main entry point. It classifies the challenge,
+        then enters the single-agent ReAct loop with skill-based prompts.
 
         Args:
             description: Challenge description text.
@@ -329,6 +327,7 @@ class Orchestrator:
         """
         self._custom_flag_pattern = flag_pattern
         self._cancelled = False
+        self._start_time = time.time()
 
         # Create session
         sid = self._session.new_session(
@@ -338,16 +337,28 @@ class Orchestrator:
             flag_pattern=flag_pattern or "",
         )
 
+        # Create audit logger
+        self._audit = AuditLogger(
+            session_id=sid,
+            session_dir=self._config.log.session_dir,
+        )
+        self._audit.log_session_start(
+            challenge=description,
+            files=[str(f) for f in files] if files else [],
+            target_url=target_url or "",
+        )
+
         # Start dashboard
         if self._dashboard:
             self._dashboard.start()
 
         try:
             result = self._run_pipeline(
-                description, files, target_url, flag_pattern, forced_category
+                description, files, target_url, flag_pattern, forced_category,
             )
         except KeyboardInterrupt:
             self._cb.on_error("Interrupted by user.")
+            self._session.transition(WorkflowState.PAUSED, "Interrupted by user")
             self._session.update(status="paused")
             self._session.save()
             result = SolveResult(
@@ -362,17 +373,34 @@ class Orchestrator:
                 self._dashboard.stop()
 
         # Finalise session
+        final_status = "solved" if result.success else "failed"
         result.session_id = sid
         result.cost_usd = self._cost.total_cost
         result.total_tokens = self._cost.total_tokens
         self._session.update(
-            status="solved" if result.success else "failed",
+            status=final_status,
             flags=result.flags,
             cost=self._cost.to_dict(),
             model_used=self._current_model,
         )
         self._session.save()
-        self._session.save_audit_log()
+
+        # Audit: session end
+        if self._audit:
+            self._audit.log_session_end(
+                status=final_status,
+                total_steps=result.iterations,
+                total_tokens=self._cost.total_tokens,
+                total_cost=self._cost.total_cost,
+            )
+            self._audit.close()
+
+        # Generate and save report
+        self._generate_and_save_report(result)
+
+        # Record to knowledge base + stats
+        self._record_knowledge_and_stats(description, result)
+
         return result
 
     def resume(
@@ -398,6 +426,14 @@ class Orchestrator:
         self._iteration = data.current_iteration
         self._found_flags = list(data.flags)
         self._cancelled = False
+        self._start_time = time.time()
+
+        # Create audit logger (append to existing)
+        self._audit = AuditLogger(
+            session_id=session_id,
+            session_dir=self._config.log.session_dir,
+        )
+        self._audit.log("session_resume", iteration=self._iteration)
 
         # Restore messages
         self._context._messages = list(data.messages)  # noqa: SLF001
@@ -417,18 +453,32 @@ class Orchestrator:
         result.cost_usd = self._cost.total_cost
         result.total_tokens = self._cost.total_tokens
 
+        final_status = "solved" if result.success else "failed"
         self._session.update(
-            status="solved" if result.success else "failed",
+            status=final_status,
             flags=result.flags,
             cost=self._cost.to_dict(),
             model_used=self._current_model,
         )
         self._session.save()
-        self._session.save_audit_log()
+
+        # Audit: session end
+        if self._audit:
+            self._audit.log_session_end(
+                status=final_status,
+                total_steps=result.iterations,
+                total_tokens=self._cost.total_tokens,
+                total_cost=self._cost.total_cost,
+            )
+            self._audit.close()
+
+        # Generate and save report
+        self._generate_and_save_report(result)
+
         return result
 
     # ------------------------------------------------------------------
-    # Internal pipeline
+    # Single-agent pipeline
     # ------------------------------------------------------------------
 
     def _run_pipeline(
@@ -439,7 +489,7 @@ class Orchestrator:
         flag_pattern: str | None,
         forced_category: str | None = None,
     ) -> SolveResult:
-        """Run the full classify -> plan -> solve pipeline.
+        """Run the classify -> solve pipeline (single agent).
 
         Args:
             description: Challenge description.
@@ -453,13 +503,14 @@ class Orchestrator:
         """
         # --- Phase 0: Intent classification ---
         self._cb.on_phase("Intent", "Classifying user intent...")
+        self._session.transition(WorkflowState.CLASSIFYING, "Intent classification")
         self._intent = classify_intent(description, self._client, self._config)
         self._cb.on_phase(
             "Intent",
             f"{self._intent.intent.value} — {self._intent.stop_criteria}",
         )
 
-        # --- Phase 1: Reconnaissance ---
+        # --- Phase 1: Category classification ---
         self._cb.on_phase("Classifying", "Detecting challenge category...")
         file_info = self._gather_file_info(files)
 
@@ -478,14 +529,23 @@ class Orchestrator:
 
         self._session.update(category=category.value)
 
+        # Audit: classify
+        if self._audit:
+            intent_str = self._intent.intent.value if self._intent else "find_flag"
+            self._audit.log_classify(category=category.value, intent=intent_str)
+
         # --- Phase 2: Planning ---
+        self._session.transition(WorkflowState.PLANNING, f"Category: {category.value}")
         self._cb.on_phase("Planning", "Creating attack plan...")
-        playbook = get_playbook(category)
         plan = create_plan(
             description, category, file_info, self._client, self._config
         )
         self._cb.on_thinking(plan)
         self._session.update(plan=plan)
+
+        # Audit: plan
+        if self._audit:
+            self._audit.log_plan(model=self._config.model.fast_model, plan=plan)
 
         # Select initial model
         self._current_model = select_model_for_task(
@@ -493,10 +553,13 @@ class Orchestrator:
         )
         self._log.info(f"Initial model: {self._current_model}")
 
-        # --- Phase 3: Setup context ---
+        # --- Phase 2.5: Knowledge base hints ---
+        knowledge_hint = self._get_knowledge_hints(description, category.value)
+
+        # --- Phase 3: Setup context with skill-based prompt ---
         intent_context = self._build_intent_context()
         system_prompt = build_system_prompt(
-            category_playbook=playbook,
+            category=category.value,
             extra_context=self._build_extra_context(target_url, file_info),
             intent_context=intent_context,
         )
@@ -508,6 +571,9 @@ class Orchestrator:
         if file_info:
             initial_message += f"\n\nFiles:\n{file_info}"
         initial_message += f"\n\nAttack plan:\n{plan}"
+
+        if knowledge_hint:
+            initial_message += knowledge_hint
 
         # Tailor the initial instruction based on intent
         if self._intent.intent == UserIntent.FIND_FLAG:
@@ -546,6 +612,7 @@ class Orchestrator:
         # Determine step budget based on intent
         intent_max = max_steps_for_intent(self._intent.intent, category)
         effective_max = min(self._config.agent.max_iterations, intent_max)
+        self._session.transition(WorkflowState.SOLVING, f"Max {effective_max} steps")
         self._cb.on_phase(
             "Solving",
             f"Entering solve loop (max {effective_max} steps)...",
@@ -618,6 +685,13 @@ class Orchestrator:
             # --- Final attempt prompt ---
             if self._iteration == max_iter - 3:
                 self._context.add_user_message(FINAL_ATTEMPT_PROMPT)
+
+            # --- LAST STEP: force answer ---
+            if self._iteration >= max_iter - 1:
+                self._context.add_user_message(
+                    "LAST STEP. You MUST call answer_user NOW with your best "
+                    "answer. Do not run any more commands — just answer."
+                )
 
             # --- Call LLM ---
             cost_records_before = len(self._cost.records)
@@ -705,6 +779,7 @@ class Orchestrator:
                 "Exhausted maximum iterations. "
                 "Here is what was discovered so far."
             )
+            self._session.transition(WorkflowState.FAILED, summary)
         self._cb.on_error(summary)
         return SolveResult(
             success=bool(self._found_flags),
@@ -809,10 +884,29 @@ class Orchestrator:
 
         self._cb.on_tool_call(name, args)
 
+        # Audit: tool call
+        if self._audit:
+            self._audit.log_tool_call(
+                step=self._iteration, tool=name, args=args,
+            )
+
         result = self._registry.execute(name, args)
 
         output = result.output if result.success else f"[ERROR] {result.error}"
         self._cb.on_tool_result(name, output, result.success)
+
+        # Audit: tool result
+        if self._audit:
+            if result.success:
+                self._audit.log_tool_result(
+                    step=self._iteration, tool=name,
+                    success=True, output_length=len(result.output),
+                )
+            else:
+                self._audit.log_tool_error(
+                    step=self._iteration, tool=name,
+                    error=result.error or output[:300],
+                )
 
         if result.success:
             self._pivot.record_progress(self._iteration)
@@ -881,6 +975,10 @@ class Orchestrator:
 
         self._cb.on_answer(answer, confidence, flag if flag else None)
 
+        # Audit: answer
+        if self._audit:
+            self._audit.log_answer(answer=answer, confidence=confidence, flag=flag)
+
         # If a flag was provided, add it to found flags
         if flag:
             if flag not in self._found_flags:
@@ -901,6 +999,8 @@ class Orchestrator:
             flags_found=[flag] if flag else [],
         ))
 
+        self._session.transition(WorkflowState.SOLVED, f"Answer: {answer[:80]}")
+
         return SolveResult(
             success=True,
             flags=self._found_flags,
@@ -917,12 +1017,12 @@ class Orchestrator:
     # ------------------------------------------------------------------
 
     def _handle_pivot(self, level: PivotLevel) -> None:
-        """Apply a strategy pivot at the given level.
-
-        Args:
-            level: The pivot escalation level to apply.
-        """
+        """Apply a strategy pivot at the given level."""
         self._cb.on_pivot(level.name, self._pivot.pivot_count)
+
+        # Audit: pivot
+        if self._audit:
+            self._audit.log_pivot(level=level.name, pivot_count=self._pivot.pivot_count)
 
         prompt = self._pivot.get_pivot_prompt(level)
         self._context.add_user_message(prompt)
@@ -942,6 +1042,8 @@ class Orchestrator:
                 Category.MISC, self._config, is_escalated=True
             )
             self._cb.on_model_change(old_model, self._current_model)
+            if self._audit:
+                self._audit.log_model_switch(old_model, self._current_model)
 
         # Ask-user level
         if level == PivotLevel.ASK_USER:
@@ -964,24 +1066,21 @@ class Orchestrator:
         category: Category,
         summary: str = "",
     ) -> SolveResult:
-        """Handle found flags and return a success result.
-
-        Args:
-            flags: List of flag strings just found.
-            category: Challenge category.
-            summary: Optional summary text.
-
-        Returns:
-            Successful SolveResult.
-        """
+        """Handle found flags and return a success result."""
         for f in flags:
             if f not in self._found_flags:
                 self._found_flags.append(f)
                 self._cb.on_flag_found(f)
+                if self._audit:
+                    self._audit.log_flag_found(f)
 
         if self._dashboard:
             for f in flags:
                 self._dashboard.add_flag(f)
+
+        self._session.transition(
+            WorkflowState.SOLVED, f"Flags: {', '.join(flags)}"
+        )
 
         return SolveResult(
             success=True,
@@ -991,6 +1090,31 @@ class Orchestrator:
             intent=self._intent.intent.value if self._intent else "find_flag",
             summary=summary,
         )
+
+    # ------------------------------------------------------------------
+    # Report generation
+    # ------------------------------------------------------------------
+
+    def _generate_and_save_report(self, result: SolveResult) -> None:
+        """Generate a Markdown report and save it to ./reports/."""
+        try:
+            session_data = self._session.get_session_data()
+            if session_data is None:
+                return
+
+            duration = time.time() - self._start_time if self._start_time else 0.0
+            report_md = generate_report(
+                session_data=asdict(session_data),
+                cost_data=self._cost.to_dict(),
+                duration_s=duration,
+            )
+            report_path = save_report(
+                report_md=report_md,
+                session_id=result.session_id,
+            )
+            self._cb.on_report_saved(str(report_path))
+        except Exception as exc:
+            self._log.debug(f"Report generation failed: {exc}")
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1026,14 +1150,7 @@ class Orchestrator:
         return "\n".join(lines)
 
     def _gather_file_info(self, files: list[Path] | None) -> str:
-        """Gather type information about provided challenge files.
-
-        Args:
-            files: List of file paths.
-
-        Returns:
-            Multi-line string with file name and detected type.
-        """
+        """Gather type information about provided challenge files."""
         if not files:
             return ""
 
@@ -1049,15 +1166,7 @@ class Orchestrator:
     def _build_extra_context(
         self, target_url: str | None, file_info: str
     ) -> str:
-        """Build additional context string for the system prompt.
-
-        Args:
-            target_url: Optional target URL.
-            file_info: File information string.
-
-        Returns:
-            Extra context string.
-        """
+        """Build additional context string for the system prompt."""
         parts: list[str] = []
         parts.append(f"Working directory: {self._workspace}")
         if target_url:
@@ -1068,3 +1177,73 @@ class Orchestrator:
             f"Available tools: {', '.join(self._registry.list_names())}"
         )
         return "\n".join(parts)
+
+    def _get_knowledge_hints(self, description: str, category: str) -> str:
+        """Search the knowledge base for similar past solves.
+
+        Returns:
+            Hint string to append to the initial message, or empty.
+        """
+        try:
+            from knowledge.base import KnowledgeBase
+
+            kb = KnowledgeBase()
+            similar = kb.search(description, category=category, limit=2)
+            if not similar:
+                return ""
+
+            lines = ["\n\n## Hints from similar past solves:"]
+            for s in similar:
+                lines.append(f"- \"{s['challenge'][:100]}\"")
+                cmds = s.get("commands", [])[:2]
+                if cmds:
+                    lines.append(f"  Used: {', '.join(cmds)}")
+                techs = s.get("techniques", [])
+                if techs:
+                    lines.append(f"  Techniques: {', '.join(techs[:3])}")
+                lines.append(f"  Solved in {s.get('steps', '?')} steps")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def _record_knowledge_and_stats(
+        self, description: str, result: SolveResult
+    ) -> None:
+        """Save solve data to the knowledge base and stats tracker."""
+        try:
+            from knowledge.base import KnowledgeBase
+            from knowledge.extractor import extract_from_solve
+
+            session_data = self._session.get_session_data()
+            steps_log = session_data.steps if session_data else []
+
+            entry = extract_from_solve(
+                challenge=description,
+                category=result.category,
+                steps_log=steps_log,
+                answer=result.answer,
+                flag=result.flags[0] if result.flags else None,
+                cost=result.cost_usd,
+            )
+            KnowledgeBase().add(entry)
+        except Exception as exc:
+            self._log.debug(f"Knowledge save failed: {exc}")
+
+        try:
+            from stats.tracker import StatsTracker
+
+            duration = time.time() - self._start_time if self._start_time else 0.0
+            StatsTracker().record({
+                "session_id": result.session_id,
+                "challenge": description[:200],
+                "category": result.category,
+                "intent": result.intent,
+                "success": result.success,
+                "steps": result.iterations,
+                "tokens": result.total_tokens,
+                "cost": round(result.cost_usd, 4),
+                "duration": round(duration, 1),
+                "model": self._current_model,
+            })
+        except Exception as exc:
+            self._log.debug(f"Stats save failed: {exc}")

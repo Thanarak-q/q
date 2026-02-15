@@ -1,0 +1,81 @@
+name: Q Benchmark
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agent/**'
+      - 'tools/**'
+      - 'prompts/**'
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly Sunday midnight
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+
+      - name: Run benchmark
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 main.py --benchmark benchmark/challenges.json
+
+      - name: Check results
+        run: |
+          # Find the latest results file
+          LATEST=$(ls -t benchmark/results/*.json 2>/dev/null | head -1)
+          if [ -z "$LATEST" ]; then
+            echo "No results file found"
+            exit 1
+          fi
+          python3 benchmark/check.py "$LATEST"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark/results/
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const glob = require('glob');
+            const files = fs.readdirSync('benchmark/results').filter(f => f.endsWith('.json')).sort().reverse();
+            if (files.length === 0) return;
+            const results = JSON.parse(fs.readFileSync(`benchmark/results/${files[0]}`));
+            const body = `## Q Benchmark Results
+
+            | Metric | Value |
+            |--------|-------|
+            | Passed | ${results.passed}/${results.total_challenges} |
+            | Pass Rate | ${results.pass_rate} |
+            | Total Cost | $${results.total_cost_usd} |
+            | Duration | ${results.total_duration_s}s |
+
+            ${results.passed === results.total_challenges ? '✅ All passed' : '❌ Some failed'}`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
