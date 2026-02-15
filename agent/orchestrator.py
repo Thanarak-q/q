@@ -240,6 +240,7 @@ class Orchestrator:
         callbacks: AgentCallbacks | None = None,
         cost_tracker: CostTracker | None = None,
         repo_path: str | None = None,
+        yaml_config_path: str | None = None,
     ) -> None:
         self._config = config or load_config()
         self._client = OpenAI(api_key=self._config.model.api_key)
@@ -264,6 +265,16 @@ class Orchestrator:
 
         # Source code analysis (white-box mode)
         self._repo_path: str | None = repo_path
+
+        # YAML config (for target info, parallel settings, etc.)
+        self._yaml_config_path: str | None = yaml_config_path
+        self._yaml_config: Any = None
+        if yaml_config_path:
+            try:
+                from config_yaml.loader import load_yaml_config
+                self._yaml_config = load_yaml_config(yaml_config_path)
+            except Exception:
+                pass
 
         # Callbacks (use NullCallbacks for backward compat)
         self._cb: AgentCallbacks = callbacks or NullCallbacks()
@@ -574,6 +585,17 @@ class Orchestrator:
         extra_ctx = self._build_extra_context(target_url, file_info)
         if code_hints:
             extra_ctx += "\n" + code_hints
+
+        # Inject target config from YAML
+        if self._yaml_config:
+            try:
+                from config_yaml.loader import inject_target_to_prompt
+                target_prompt = inject_target_to_prompt(self._yaml_config)
+                if target_prompt:
+                    extra_ctx += "\n" + target_prompt
+            except Exception:
+                pass
+
         system_prompt = build_system_prompt(
             category=category.value,
             extra_context=extra_ctx,
@@ -633,7 +655,17 @@ class Orchestrator:
             "Solving",
             f"Entering solve loop (max {effective_max} steps)...",
         )
-        return self._react_loop(category, max_iterations_override=effective_max)
+        result = self._react_loop(category, max_iterations_override=effective_max)
+
+        # --- Phase 5: Parallel fallback (if primary solve failed) ---
+        if not result.success and self._should_try_parallel(category):
+            parallel_result = self._try_parallel_solve(
+                description, category, files, target_url, flag_pattern,
+            )
+            if parallel_result is not None and parallel_result.success:
+                return parallel_result
+
+        return result
 
     def _react_loop(
         self,
@@ -1177,6 +1209,80 @@ class Orchestrator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _should_try_parallel(self, category: Category) -> bool:
+        """Check whether parallel solving should be attempted."""
+        # Check YAML config
+        if self._yaml_config:
+            if not self._yaml_config.parallel_enabled:
+                return False
+
+        # Check pipeline config
+        if not self._config.pipeline.fast_path_enabled:
+            return False
+
+        # Only try for categories that have defined approaches
+        from agent.parallel import CATEGORY_APPROACHES
+        return category.value in CATEGORY_APPROACHES
+
+    def _try_parallel_solve(
+        self,
+        description: str,
+        category: Category,
+        files: list[Path] | None,
+        target_url: str | None,
+        flag_pattern: str | None,
+    ) -> SolveResult | None:
+        """Try multiple approaches in parallel as a fallback."""
+        from agent.parallel import ParallelSolver
+
+        self._cb.on_phase(
+            "Parallel",
+            f"Primary solve failed — trying parallel approaches for {category.value}...",
+        )
+
+        max_parallel = 3
+        if self._yaml_config:
+            max_parallel = self._yaml_config.parallel_max
+
+        solver = ParallelSolver(
+            config=self._config,
+            docker_manager=self._docker,
+            workspace=self._workspace,
+            max_parallel=max_parallel,
+            callbacks=self._cb,
+        )
+
+        attempt = solver.solve_parallel(
+            description=description,
+            category=category.value,
+            files=files,
+            target_url=target_url,
+            flag_pattern=flag_pattern,
+        )
+
+        if attempt is None:
+            return None
+
+        if attempt.success:
+            self._cb.on_phase("Parallel", f"'{attempt.approach}' succeeded!")
+            if attempt.flags:
+                self._found_flags.extend(attempt.flags)
+                for f in attempt.flags:
+                    self._cb.on_flag_found(f)
+
+            return SolveResult(
+                success=True,
+                flags=attempt.flags or self._found_flags,
+                answer=attempt.answer,
+                iterations=self._iteration + attempt.steps,
+                category=category.value,
+                intent=self._intent.intent.value if self._intent else "find_flag",
+                summary=f"Solved via parallel approach: {attempt.approach}",
+            )
+
+        self._cb.on_phase("Parallel", "All parallel approaches failed")
+        return None
 
     def _run_code_analysis(self) -> str:
         """Run static code analysis if a repo path was provided.

@@ -95,6 +95,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
+# ── Web recon tools ───────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nikto \
+    whatweb \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Subfinder (subdomain enumeration) ────────────────────────────────
+RUN wget -q -O /tmp/subfinder.zip \
+    https://github.com/projectdiscovery/subfinder/releases/download/v2.6.6/subfinder_2.6.6_linux_amd64.zip \
+    && unzip -o /tmp/subfinder.zip -d /usr/local/bin/ subfinder \
+    && chmod +x /usr/local/bin/subfinder \
+    && rm -f /tmp/subfinder.zip \
+    || true
+
 # ── wordlists directory ───────────────────────────────────────────────
 RUN mkdir -p /usr/share/wordlists
 

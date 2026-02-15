@@ -4,7 +4,25 @@ Quick reference. Recon fast, exploit targeted.
 
 ---
 
-## Recon (do this first, every web challenge)
+## Recon (Do This First for Live Targets)
+
+If challenge gives a URL, ALWAYS start with the recon tool:
+```
+recon(action="quick", target="http://target/")
+→ tech stack + interesting paths + headers in ONE call
+```
+
+Only if quick recon isn't enough:
+```
+recon(action="nmap", target="target")           → find hidden services/ports
+recon(action="gobuster", target="http://target") → find hidden directories
+recon(action="nikto", target="http://target")    → vulnerability scan
+```
+
+DON'T run nmap/gobuster/nikto unless quick_recon didn't give enough info.
+Most CTF web challenges don't need heavy scanning.
+
+### Manual Recon (when recon tool is unavailable)
 
 ```bash
 # 1. What's the tech stack?

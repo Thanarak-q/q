@@ -36,7 +36,7 @@ COMMAND_HELP: dict[str, str] = {
     "/history": "Show solve history for this session",
     # Settings
     "/model [name]": "Show or change the model (gpt-4o, gpt-4o-mini, o3)",
-    "/config": "Show current configuration",
+    "/config [load|show]": "Show config, load YAML, or show target details",
     "/cost": "Show token usage and cost for this session",
     "/verbose [on|off]": "Toggle verbose mode",
     "/clear": "Clear screen and reset context",
@@ -192,21 +192,90 @@ def _cmd_model(arg: str, state: ChatState, display: Display) -> bool:
 
 
 def _cmd_config(arg: str, state: ChatState, display: Display) -> bool:
+    parts = arg.split(maxsplit=1) if arg else []
+    subcmd = parts[0].lower() if parts else ""
+
+    # /config load <path> — load a YAML config
+    if subcmd == "load":
+        yaml_path = parts[1].strip() if len(parts) > 1 else ""
+        if not yaml_path:
+            display.show_error("Usage: /config load <path/to/config.yaml>")
+            return False
+
+        from pathlib import Path as P
+        if not P(yaml_path).exists():
+            display.show_error(f"File not found: {yaml_path}")
+            return False
+
+        from config_yaml.loader import (
+            apply_yaml_to_appconfig,
+            config_summary,
+            load_yaml_config,
+        )
+
+        qcfg = load_yaml_config(yaml_path)
+        state.config = apply_yaml_to_appconfig(qcfg, state.config)
+        state.yaml_config_path = yaml_path
+        state.current_model = state.config.model.default_model
+
+        display.show_info(f"Config loaded: {yaml_path}")
+        summary = config_summary(qcfg)
+        for k, v in summary.items():
+            display.console.print(f"  [dim]{k}: {v}[/dim]")
+        display.console.print()
+        return False
+
+    # /config show target — show target details from YAML
+    if subcmd == "show" and len(parts) > 1 and "target" in parts[1].lower():
+        if not state.yaml_config_path:
+            display.show_info("No YAML config loaded. Use: /config load <path>")
+            return False
+
+        from config_yaml.loader import inject_target_to_prompt, load_yaml_config
+
+        qcfg = load_yaml_config(state.yaml_config_path)
+        prompt = inject_target_to_prompt(qcfg)
+        if prompt:
+            display.console.print(prompt)
+        else:
+            display.show_info("No target configured in YAML.")
+        return False
+
+    # Default: show current config
     cfg = state.config
-    display.show_config(
-        {
-            "Default Model": cfg.model.default_model,
-            "Fast Model": cfg.model.fast_model,
-            "Reasoning Model": cfg.model.reasoning_model,
-            "Max Iterations": cfg.agent.max_iterations,
-            "Stall Threshold": cfg.agent.stall_threshold,
-            "Budget Limit": f"${cfg.agent.max_cost_per_challenge:.2f}",
-            "Sandbox Mode": cfg.sandbox_mode,
-            "Docker Image": cfg.docker.image_name,
-            "Tool Output Max": f"{cfg.agent.tool_output_max_chars} chars",
-            "Context Limit": f"{cfg.agent.context_limit_percent}%",
-        }
-    )
+    config_data = {
+        "Default Model": cfg.model.default_model,
+        "Fast Model": cfg.model.fast_model,
+        "Reasoning Model": cfg.model.reasoning_model,
+        "Max Iterations": cfg.agent.max_iterations,
+        "Stall Threshold": cfg.agent.stall_threshold,
+        "Budget Limit": f"${cfg.agent.max_cost_per_challenge:.2f}",
+        "Sandbox Mode": cfg.sandbox_mode,
+        "Docker Image": cfg.docker.image_name,
+        "Tool Output Max": f"{cfg.agent.tool_output_max_chars} chars",
+        "Context Limit": f"{cfg.agent.context_limit_percent}%",
+    }
+
+    # Add YAML config info if loaded
+    if state.yaml_config_path:
+        config_data["YAML Config"] = state.yaml_config_path
+        try:
+            from config_yaml.loader import load_yaml_config
+            qcfg = load_yaml_config(state.yaml_config_path)
+            if qcfg.target and qcfg.target.url:
+                config_data["Target URL"] = qcfg.target.url
+            if qcfg.target and qcfg.target.auth and qcfg.target.auth.username:
+                config_data["Auth User"] = qcfg.target.auth.username
+            config_data["Parallel"] = (
+                f"{'enabled' if qcfg.parallel_enabled else 'disabled'} "
+                f"(max {qcfg.parallel_max})"
+            )
+            if qcfg.target and qcfg.target.focus:
+                config_data["Focus"] = ", ".join(qcfg.target.focus)
+        except Exception:
+            pass
+
+    display.show_config(config_data)
     return False
 
 

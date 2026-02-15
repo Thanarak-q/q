@@ -65,6 +65,9 @@ class ChatState:
     # White-box analysis
     repo_path: str | None = None
 
+    # YAML config path
+    yaml_config_path: str | None = None
+
 
 # ------------------------------------------------------------------
 # Chat UI callback implementation — tree-structured output
@@ -411,6 +414,7 @@ def run_solve(
         callbacks=callbacks,
         cost_tracker=state.session_cost_tracker,
         repo_path=state.repo_path,
+        yaml_config_path=state.yaml_config_path,
     )
 
     state.solving = True
@@ -511,12 +515,17 @@ def run_solve(
 # ------------------------------------------------------------------
 
 
-def chat_loop(verbose: bool = False, repo_path: str | None = None) -> None:
+def chat_loop(
+    verbose: bool = False,
+    repo_path: str | None = None,
+    config_path: str | None = None,
+) -> None:
     """Run the main interactive chat loop.
 
     Args:
         verbose: Enable verbose output.
         repo_path: Optional path to source code for white-box analysis.
+        config_path: Optional path to YAML config file.
     """
     # Load config
     config = load_config()
@@ -537,12 +546,21 @@ def chat_loop(verbose: bool = False, repo_path: str | None = None) -> None:
 
     # Init display and state
     display = Display()
+    # Apply YAML config overrides
+    yaml_config = None
+    if config_path:
+        from config_yaml.loader import apply_yaml_to_appconfig, load_yaml_config
+
+        yaml_config = load_yaml_config(config_path)
+        config = apply_yaml_to_appconfig(yaml_config, config)
+
     state = ChatState(
         config=config,
         current_model=config.model.default_model,
         workspace=Path.cwd(),
-        verbose=verbose,
+        verbose=verbose or (yaml_config.verbose if yaml_config else False),
         repo_path=repo_path,
+        yaml_config_path=config_path,
     )
     callbacks = ChatCallbacks(display, state)
 
@@ -556,6 +574,17 @@ def chat_loop(verbose: bool = False, repo_path: str | None = None) -> None:
         sandbox=state.sandbox_display,
         workspace=str(state.workspace),
     )
+
+    # Show YAML config info if loaded
+    if yaml_config and config_path:
+        from config_yaml.loader import config_summary
+
+        display.show_info(f"Config loaded: {config_path}")
+        summary = config_summary(yaml_config)
+        if yaml_config.target and yaml_config.target.url:
+            display.console.print(
+                f"  [dim]Target: {yaml_config.target.url}[/dim]"
+            )
 
     # Main loop
     try:

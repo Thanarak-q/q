@@ -631,6 +631,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output file path for writeup.",
     )
     parser.add_argument(
+        "--config", "-c",
+        metavar="FILE",
+        default=None,
+        help="Path to YAML config file (see configs/example.yaml).",
+    )
+    parser.add_argument(
         "--repo",
         metavar="PATH",
         default=None,
@@ -685,7 +691,11 @@ def main() -> None:
         # Default: interactive chat mode
         from ui.chat import chat_loop
 
-        chat_loop(verbose=args.verbose, repo_path=args.repo)
+        chat_loop(
+            verbose=args.verbose,
+            repo_path=args.repo,
+            config_path=args.config,
+        )
 
 
 if __name__ == "__main__":

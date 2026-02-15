@@ -53,15 +53,22 @@ def generate_report(
     else:
         status_icon = "\u274c Failed"
 
-    # Extract answer from steps
-    answer = ""
+    # Extract answer from steps (use parameter if provided)
     answer_confidence = ""
-    for step in reversed(steps):
-        if step.get("tool_name") == "answer_user":
-            args = step.get("tool_args", {})
-            answer = args.get("answer", "")
-            answer_confidence = args.get("confidence", "")
-            break
+    if not answer:
+        for step in reversed(steps):
+            if step.get("tool_name") == "answer_user":
+                args = step.get("tool_args", {})
+                answer = args.get("answer", "")
+                answer_confidence = args.get("confidence", "")
+                break
+    else:
+        # Still extract confidence from steps
+        for step in reversed(steps):
+            if step.get("tool_name") == "answer_user":
+                args = step.get("tool_args", {})
+                answer_confidence = args.get("confidence", "")
+                break
 
     # Build report
     lines: list[str] = []

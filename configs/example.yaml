@@ -1,0 +1,60 @@
+# Q CTF Agent — Configuration File
+# Copy to configs/my-config.yaml and customize.
+#
+# Usage:
+#   python3 main.py --config configs/my-config.yaml
+#   or in interactive mode:  /config load configs/my-config.yaml
+
+# Model selection (overrides DEFAULT_MODEL env var)
+model: gpt-4o
+fallback_model: gpt-4o-mini
+
+# Agent behavior
+agent:
+  max_steps: 15           # Hard limit per challenge
+  parallel: true          # Enable parallel approach solving on failure
+  parallel_max: 3         # Max concurrent approaches
+
+# CTF settings
+ctf:
+  flag_format: "flag{.*}"  # Regex for flag detection (default works for most CTFs)
+
+# Target (for web challenges with a live URL)
+target:
+  url: "http://localhost:3000"
+
+  auth:
+    login_url: "http://localhost:3000/login"
+    username: "test@example.com"
+    password: "password123"
+    # totp_secret: "JBSWY3DPEHPK3PXP"  # Uncomment for 2FA
+
+    login_flow:
+      - "Navigate to login page"
+      - "Fill email field with $username"
+      - "Fill password field with $password"
+      - "Click Sign In button"
+
+    success_condition: "url_contains:/dashboard"
+
+  # Focus testing on these endpoints
+  focus:
+    - "/api"
+    - "/admin"
+    - "/search"
+
+  # Skip these paths (logout, static assets, etc.)
+  avoid:
+    - "/logout"
+    - "/static"
+
+# Output settings
+output:
+  report_dir: "reports"
+  session_dir: "sessions"
+  verbose: false
+
+# Cost controls
+cost:
+  max_per_challenge: 0.50   # Stop if cost exceeds this (USD)
+  warn_at: 0.20             # Warn when cost reaches this (USD)

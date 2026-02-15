@@ -14,6 +14,7 @@ from tools.base import BaseTool, ToolResult
 from tools.file_manager import FileManagerTool
 from tools.network import NetworkTool
 from tools.python_exec import PythonExecTool
+from tools.recon import ReconTool
 from tools.shell import ShellTool
 from utils.logger import get_logger
 
@@ -120,6 +121,7 @@ class ToolRegistry:
         self.register(PythonExecTool(docker_manager=docker_manager))
         self.register(FileManagerTool(workspace=workspace, docker_manager=docker_manager))
         self.register(NetworkTool())
+        self.register(ReconTool())
         self.register(AnswerUserTool())
 
         from tools.browser import BrowserTool
