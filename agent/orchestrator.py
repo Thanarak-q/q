@@ -605,10 +605,21 @@ class Orchestrator:
             except Exception:
                 pass
 
+        # Build scope lock to prevent agent from drifting
+        scope = {
+            "challenge": description[:200],
+            "category": category.value,
+            "goal": self._intent.intent.value if self._intent else "find_flag",
+            "files": [f.name for f in files] if files else [],
+        }
+        if target_url:
+            scope["files"].append(target_url)
+
         system_prompt = build_system_prompt(
             category=category.value,
             extra_context=extra_ctx,
             intent_context=intent_context,
+            scope=scope,
         )
         self._context.set_system_prompt(system_prompt)
 
@@ -1004,6 +1015,14 @@ class Orchestrator:
             if self._dashboard:
                 for f in flags:
                     self._dashboard.add_flag(f)
+
+            # Inject stop nudge into context so model knows to call answer_user
+            flag_str = ", ".join(flags)
+            self._context.add_user_message(
+                f"FLAG DETECTED: {flag_str}\n"
+                f"You MUST call answer_user NOW with this flag. "
+                f"Do NOT run any more commands. Mission complete."
+            )
         return flags
 
     # ------------------------------------------------------------------

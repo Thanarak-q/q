@@ -150,14 +150,14 @@ def get_playbook(category: Category) -> str:
     Returns:
         Skill file content string.
     """
-    categories_dir = Path(__file__).resolve().parent.parent / "prompts" / "categories"
-    skill_file = categories_dir / f"{category.value}.md"
+    skills_dir = Path(__file__).resolve().parent.parent / "skills"
+    skill_file = skills_dir / f"{category.value}.md"
 
     if skill_file.exists():
         return skill_file.read_text()
 
     # Fallback to misc
-    fallback = categories_dir / "misc.md"
+    fallback = skills_dir / "misc.md"
     if fallback.exists():
         return fallback.read_text()
 

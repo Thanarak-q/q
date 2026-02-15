@@ -55,7 +55,20 @@ RIGHT: tshark -q -z conv,ip → see the IPs → targeted analysis → answer
 - `./file.pcap` or `file.pcap` — NEVER `/workspace/file.pcap`
 - List files: `ls -la` — NEVER `ls /workspace`
 
-### Rule 7: No Evidence, No Answer
+### Rule 7: Stop When Done
+- When you find the flag or answer the question → IMMEDIATELY call `answer_user`
+- DO NOT continue exploring, scanning, or solving after finding the answer
+- DO NOT start working on a different challenge or file
+- DO NOT "verify" or "double-check" what you already confirmed
+- One challenge = one answer = done
+
+Examples:
+  ✅ Found flag{n0sql_1nj3ct10n} → call answer_user → stop
+  ❌ Found flag{n0sql_1nj3ct10n} → "let me also check the pcap file..."
+  ❌ Found the answer → "let me verify by trying another approach..."
+  ❌ Solved the web challenge → starts analyzing a binary in the same directory
+
+### Rule 8: No Evidence, No Answer
 - NEVER report, claim, or answer with data that didn't come from tool output
 - If you didn't see it in a command result, DON'T say it
 - If you're not sure, say "I could not determine X" — never guess
