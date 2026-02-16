@@ -649,18 +649,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Enable verbose output (full LLM thinking and tool output).",
     )
-    # Browser vision / watch mode
+    # Browser watch mode (browser is always headful now)
     parser.add_argument(
         "--watch",
         action="store_true",
         default=False,
-        help="Open visible browser to watch Q solve web challenges.",
-    )
-    parser.add_argument(
-        "--no-vision",
-        action="store_true",
-        default=False,
-        help="Disable screenshot vision (faster, fewer tokens).",
+        help="(Default behavior) Open visible browser for web challenges.",
     )
 
     # --mode kept for backward compat but ignored (always single agent)
@@ -709,8 +703,6 @@ def main() -> None:
             verbose=args.verbose,
             repo_path=args.repo,
             config_path=args.config,
-            watch_mode=args.watch,
-            no_vision=args.no_vision,
         )
 
 

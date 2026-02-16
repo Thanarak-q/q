@@ -48,12 +48,10 @@ target:
     - "/logout"
     - "/static"
 
-# Browser settings (vision + watch mode)
+# Browser settings (always headful)
 browser:
-  vision: true          # Screenshot + send to model (default: true for web)
-  watch: false          # Open visible browser window (default: false)
-  slow_mo: 300          # Delay between actions in watch mode (ms)
-  max_screenshots: 5    # Max vision screenshots per session (save tokens)
+  watch: true           # Browser always opens visible (default: true)
+  slow_mo: 300          # Delay between actions in ms (useful for watching)
   viewport:
     width: 1280
     height: 720

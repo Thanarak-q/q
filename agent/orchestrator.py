@@ -253,6 +253,7 @@ class Orchestrator:
         self._registry = ToolRegistry(
             docker_manager=docker_manager,
             workspace=self._workspace,
+            vision_config=self._config.browser_vision,
         )
         self._context = ContextManager(self._client, self._config)
         self._log = get_logger()
@@ -1033,13 +1034,9 @@ class Orchestrator:
         if result.success:
             self._pivot.record_progress(self._iteration)
 
-        # Vision handling: detect __VISION_B64__ markers and inject
-        # as a separate user message with image content
-        vision_b64, text_for_tool = self._extract_vision_data(enriched_output)
+        # Strip any leftover __VISION_B64__ markers (vision removed)
+        _, text_for_tool = self._extract_vision_data(enriched_output)
         self._context.add_tool_result(tc_id, text_for_tool)
-
-        if vision_b64:
-            self._inject_vision_message(vision_b64, name)
 
         # Dashboard update
         if self._dashboard:
@@ -1354,41 +1351,6 @@ class Orchestrator:
         # b64 might have trailing whitespace or extra markers
         b64_part = b64_part.strip().split("\n")[0].strip()
         return b64_part, text_part
-
-    def _inject_vision_message(self, b64_data: str, tool_name: str) -> None:
-        """Inject a multimodal user message with a screenshot.
-
-        OpenAI vision API expects image_url content parts in user messages.
-
-        Args:
-            b64_data: Base64-encoded image data.
-            tool_name: Tool that produced the screenshot (for context).
-        """
-        prompt_text = (
-            f"Above is a screenshot/image from the {tool_name} tool. "
-            "Look for: flags, hidden text, visual clues, CAPTCHAs, "
-            "images containing text, QR codes, "
-            "anything relevant to the challenge."
-        )
-
-        # Determine MIME type (screenshots are always PNG, downloads vary)
-        mime = "image/png"
-
-        self._context._messages.append({  # noqa: SLF001
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{mime};base64,{b64_data}",
-                    },
-                },
-                {
-                    "type": "text",
-                    "text": prompt_text,
-                },
-            ],
-        })
 
     # ------------------------------------------------------------------
     # Helpers

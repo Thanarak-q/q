@@ -106,12 +106,14 @@ class ToolRegistry:
         self,
         docker_manager: Optional[Any] = None,
         workspace: Optional[Any] = None,
+        vision_config: Optional[Any] = None,
     ) -> None:
         """Initialise the registry and register default tools.
 
         Args:
             docker_manager: Optional DockerSandbox instance shared by tools.
             workspace: Optional workspace Path for file operations.
+            vision_config: Optional BrowserVisionConfig for the browser tool.
         """
         self._tools: dict[str, BaseTool] = {}
         self._log = get_logger()
@@ -125,7 +127,7 @@ class ToolRegistry:
         self.register(AnswerUserTool())
 
         from tools.browser import BrowserTool
-        self.register(BrowserTool())
+        self.register(BrowserTool(vision_config=vision_config))
 
     @classmethod
     def from_subset(
