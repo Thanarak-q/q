@@ -3,28 +3,117 @@
 Provides headless browser control for web CTF challenges that require
 JavaScript rendering, form interaction, cookie manipulation, or
 request interception.
+
+Supports Vision Mode (auto-screenshot + model vision analysis) and
+Watch Mode (visible browser window for debugging).
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import re
+from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
-from config import load_config
+from config import BrowserVisionConfig, load_config
 from tools.base import BaseTool, ToolParameter
 from utils.logger import get_logger
 
 
+class VisionController:
+    """Control when to use vision (screenshot) to save tokens.
+
+    Screenshots cost ~1000 tokens each. Default behaviour is OFF —
+    only screenshot when there's a concrete reason to believe the
+    page contains visual-only content (very short text, explicit
+    image challenge hints, or the agent explicitly asks for it).
+
+    The agent can always call ``action="screenshot"`` manually;
+    this controller only gates the *automatic* screenshots that
+    happen after navigate/click.
+    """
+
+    def __init__(self, max_screenshots: int = 5) -> None:
+        self.screenshots_sent = 0
+        self.max_screenshots = max_screenshots
+
+    def should_screenshot(
+        self,
+        page_text: str,
+        action: str,
+        page_html: str = "",
+    ) -> bool:
+        """Decide if this page state needs an automatic screenshot.
+
+        Conservative by default — only returns True when there is a
+        positive signal that visual analysis is needed.
+
+        Args:
+            page_text: ``innerText("body")`` — visible text only.
+            action: The browser action that just executed.
+            page_html: Raw HTML of the page (optional, for tag checks).
+        """
+        # Hard budget cap
+        if self.screenshots_sent >= self.max_screenshots:
+            return False
+
+        # Already found flag in text → no point screenshotting
+        if re.search(r'flag\{[^}]+\}', page_text, re.I):
+            return False
+
+        text_len = len(page_text.strip())
+
+        # --- Positive signals (need vision) ---
+
+        # Page has almost no visible text → content is probably
+        # rendered in images / canvas / JS that innerText misses
+        if text_len < 50:
+            return True
+
+        # HTML contains <canvas> — often used to render flags visually
+        if page_html and "<canvas" in page_html.lower():
+            return True
+
+        # Visible text explicitly mentions visual clues
+        lower_text = page_text.lower()
+        if any(kw in lower_text for kw in [
+            "captcha", "qr code", "scan this", "look at the image",
+            "what do you see", "hidden in the image",
+        ]):
+            return True
+
+        # --- Everything else: no auto-screenshot ---
+        # The agent can still call action="screenshot" or
+        # action="download_image" manually when it suspects
+        # visual content.
+        return False
+
+    def record_screenshot(self) -> None:
+        self.screenshots_sent += 1
+
+    def reset(self) -> None:
+        self.screenshots_sent = 0
+
+
 class BrowserTool(BaseTool):
-    """Headless browser for web challenges requiring JS or complex interaction."""
+    """Headless browser for web challenges requiring JS or complex interaction.
+
+    Features:
+    - Vision Mode: auto-screenshot on navigate/click/submit, returned as
+      base64 for model vision analysis.
+    - Watch Mode: opens a visible browser window for debugging.
+    - download_image: download images from the page for steg analysis.
+    """
 
     name = "browser"
     description = (
-        "Control a headless browser. Use for challenges that require "
-        "JavaScript rendering, form submission, cookie manipulation, "
-        "multi-step navigation, or request interception. For simple "
-        "HTTP requests, prefer the 'network' tool instead."
+        "Control a browser (with optional vision). Use for challenges "
+        "requiring JavaScript rendering, form submission, cookie "
+        "manipulation, multi-step navigation, or visual analysis. "
+        "Vision mode auto-screenshots pages so the model can SEE them. "
+        "For simple HTTP requests, prefer the 'network' tool instead."
     )
     parameters = [
         ToolParameter(
@@ -46,19 +135,26 @@ class BrowserTool(BaseTool):
                 "send_request",
                 "intercept",
                 "back",
+                "download_image",
                 "browser_close",
             ],
         ),
         ToolParameter(
             name="url",
             type="string",
-            description="URL to navigate to (for 'navigate', 'send_request').",
+            description=(
+                "URL to navigate to (for 'navigate', 'send_request'), "
+                "or image URL (for 'download_image')."
+            ),
             required=False,
         ),
         ToolParameter(
             name="selector",
             type="string",
-            description="CSS selector for element actions (click, type, get_text, get_html).",
+            description=(
+                "CSS selector for element actions "
+                "(click, type, get_text, get_html, download_image)."
+            ),
             required=False,
         ),
         ToolParameter(
@@ -100,19 +196,38 @@ class BrowserTool(BaseTool):
         ToolParameter(
             name="data",
             type="string",
-            description="Request body for 'send_request', or URL pattern for 'intercept'.",
+            description=(
+                "Request body for 'send_request', "
+                "or URL pattern for 'intercept'."
+            ),
             required=False,
         ),
     ]
 
-    def __init__(self) -> None:
-        """Initialise without starting a browser."""
+    def __init__(self, vision_config: BrowserVisionConfig | None = None) -> None:
+        """Initialise without starting a browser.
+
+        Args:
+            vision_config: Optional vision/watch config override.
+                           If None, loaded from AppConfig.
+        """
         cfg = load_config()
         self.timeout = cfg.tool.browser_timeout_ms
         self._log = get_logger()
         self._playwright = None
         self._browser = None
         self._page = None
+
+        # Vision / watch config
+        self._vcfg = vision_config or cfg.browser_vision
+        self._vision_ctrl = VisionController(
+            max_screenshots=self._vcfg.max_screenshots,
+        )
+
+        # Screenshots directory
+        self._screenshots_dir = Path("sessions/screenshots")
+        self._screenshots_dir.mkdir(parents=True, exist_ok=True)
+        self._screenshot_count = 0
 
     def _ensure_browser(self) -> None:
         """Lazily start the browser on first use."""
@@ -128,12 +243,21 @@ class BrowserTool(BaseTool):
             )
 
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
-        )
+
+        launch_kwargs: dict[str, Any] = {
+            "headless": not self._vcfg.watch_mode,
+            "args": ["--no-sandbox", "--disable-dev-shm-usage"],
+        }
+        if self._vcfg.watch_mode:
+            launch_kwargs["slow_mo"] = self._vcfg.slow_mo_ms
+
+        self._browser = self._playwright.chromium.launch(**launch_kwargs)
         context = self._browser.new_context(
             ignore_https_errors=True,
+            viewport={
+                "width": self._vcfg.viewport_width,
+                "height": self._vcfg.viewport_height,
+            },
             user_agent=(
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
@@ -141,7 +265,10 @@ class BrowserTool(BaseTool):
         )
         self._page = context.new_page()
         self._page.set_default_timeout(self.timeout)
-        self._log.info("Browser started (Chromium headless)")
+
+        mode = "watch" if self._vcfg.watch_mode else "headless"
+        vision = "vision ON" if self._vcfg.vision_enabled else "vision OFF"
+        self._log.info(f"Browser started (Chromium {mode}, {vision})")
 
     def _close_browser(self) -> None:
         """Shut down the browser and Playwright."""
@@ -175,7 +302,8 @@ class BrowserTool(BaseTool):
             **kwargs: Must contain 'action'. Other params per action.
 
         Returns:
-            Action result as string.
+            Action result as string (may include __VISION_B64__ markers
+            for the orchestrator to detect and convert to vision messages).
         """
         action: str = kwargs["action"]
 
@@ -200,6 +328,7 @@ class BrowserTool(BaseTool):
             "send_request": self._send_request,
             "intercept": self._intercept,
             "back": self._back,
+            "download_image": self._download_image,
         }
 
         handler = dispatch.get(action)
@@ -207,6 +336,62 @@ class BrowserTool(BaseTool):
             return f"[ERROR] Unknown browser action: {action}"
 
         return handler(**kwargs)
+
+    # ------------------------------------------------------------------
+    # Vision helpers
+    # ------------------------------------------------------------------
+
+    def _take_screenshot(self, label: str) -> str | None:
+        """Take a screenshot and return base64, or None if vision disabled."""
+        self._screenshot_count += 1
+        path = self._screenshots_dir / f"{label}_{self._screenshot_count}.png"
+        try:
+            self._page.screenshot(path=str(path), full_page=False)
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            self._vision_ctrl.record_screenshot()
+            return b64
+        except Exception as exc:
+            self._log.debug(f"Screenshot failed: {exc}")
+            return None
+
+    def _maybe_screenshot(self, action: str, text_output: str) -> str:
+        """Conditionally append a vision screenshot to text output.
+
+        Uses the ``__VISION_B64__::<base64data>`` marker so the
+        orchestrator can detect it and convert to a multimodal message.
+
+        Auto-screenshot is conservative — only fires when there's a
+        concrete signal that visual analysis is needed (very short
+        text, ``<canvas>`` tag, explicit visual-challenge keywords).
+        The agent can always request a manual ``screenshot`` action.
+        """
+        if not self._vcfg.vision_enabled:
+            return text_output
+
+        # Gather page signals for the heuristic
+        try:
+            page_text = self._page.inner_text("body")
+        except Exception:
+            page_text = ""
+
+        try:
+            page_html = self._page.content()
+            # Only keep first 5k chars for the tag check — no need to
+            # send the whole DOM through the heuristic.
+            page_html = page_html[:5000]
+        except Exception:
+            page_html = ""
+
+        if not self._vision_ctrl.should_screenshot(
+            page_text, action, page_html=page_html,
+        ):
+            return text_output
+
+        b64 = self._take_screenshot(action)
+        if b64:
+            text_output += f"\n__VISION_B64__::{b64}"
+        return text_output
 
     # ------------------------------------------------------------------
     # Actions
@@ -219,7 +404,8 @@ class BrowserTool(BaseTool):
         resp = self._page.goto(url, wait_until="domcontentloaded")
         status = resp.status if resp else "unknown"
         title = self._page.title()
-        return f"Navigated to {url}\nStatus: {status}\nTitle: {title}"
+        output = f"Navigated to {url}\nStatus: {status}\nTitle: {title}"
+        return self._maybe_screenshot("navigate", output)
 
     def _click(self, **kwargs: Any) -> str:
         selector = kwargs.get("selector", "")
@@ -227,7 +413,8 @@ class BrowserTool(BaseTool):
             return "[ERROR] 'selector' is required for click."
         self._page.click(selector)
         self._page.wait_for_load_state("domcontentloaded")
-        return f"Clicked: {selector}\nCurrent URL: {self._page.url}"
+        output = f"Clicked: {selector}\nCurrent URL: {self._page.url}"
+        return self._maybe_screenshot("click", output)
 
     def _type(self, **kwargs: Any) -> str:
         selector = kwargs.get("selector", "")
@@ -256,9 +443,20 @@ class BrowserTool(BaseTool):
         return self._page.content()
 
     def _screenshot(self, **kwargs: Any) -> str:
+        """Manual screenshot — always captures regardless of VisionController."""
+        b64 = self._take_screenshot("manual")
+        if b64:
+            return (
+                f"Screenshot captured. URL: {self._page.url}\n"
+                f"__VISION_B64__::{b64}"
+            )
+        # Fallback: return raw bytes info
         raw = self._page.screenshot(full_page=True)
-        b64 = base64.b64encode(raw).decode()
-        return f"Screenshot captured ({len(raw)} bytes, base64):\n{b64[:200]}..."
+        b64_fallback = base64.b64encode(raw).decode()
+        return (
+            f"Screenshot captured ({len(raw)} bytes, base64):\n"
+            f"{b64_fallback[:200]}..."
+        )
 
     def _execute_js(self, **kwargs: Any) -> str:
         script = kwargs.get("script", "")
@@ -273,7 +471,10 @@ class BrowserTool(BaseTool):
             return "No cookies set."
         lines = []
         for c in cookies:
-            lines.append(f"  {c['name']}={c['value']} (domain={c.get('domain', '?')})")
+            lines.append(
+                f"  {c['name']}={c['value']} "
+                f"(domain={c.get('domain', '?')})"
+            )
         return "Cookies:\n" + "\n".join(lines)
 
     def _set_cookie(self, **kwargs: Any) -> str:
@@ -387,3 +588,50 @@ class BrowserTool(BaseTool):
     def _back(self, **kwargs: Any) -> str:
         self._page.go_back(wait_until="domcontentloaded")
         return f"Navigated back. Current URL: {self._page.url}"
+
+    def _download_image(self, **kwargs: Any) -> str:
+        """Download an image from the page for analysis.
+
+        Accepts either a CSS selector (for an img element) or a direct
+        URL via the 'url' parameter. The image is saved to disk and
+        returned as base64 for vision analysis.
+        """
+        selector = kwargs.get("selector", "")
+        img_url = kwargs.get("url", "")
+
+        # Resolve image URL
+        if not img_url and selector:
+            src = self._page.get_attribute(selector, "src")
+            if not src:
+                return f"[ERROR] No src found on element: {selector}"
+            img_url = src if src.startswith("http") else urljoin(
+                self._page.url, src,
+            )
+        elif not img_url:
+            return "[ERROR] 'url' or 'selector' required for download_image."
+
+        try:
+            # Download via page context (handles cookies/auth)
+            api_resp = self._page.context.request.get(img_url)
+            img_bytes = api_resp.body()
+        except Exception as exc:
+            return f"[ERROR] Failed to download image: {exc}"
+
+        # Determine extension
+        ext = img_url.rsplit(".", 1)[-1].split("?")[0][:4]
+        if ext not in ("png", "jpg", "jpeg", "gif", "bmp", "webp", "svg"):
+            ext = "png"
+
+        # Save to disk
+        self._screenshot_count += 1
+        path = self._screenshots_dir / f"image_{self._screenshot_count}.{ext}"
+        path.write_bytes(img_bytes)
+
+        img_b64 = base64.b64encode(img_bytes).decode()
+
+        return (
+            f"Image downloaded: {img_url}\n"
+            f"Saved to: {path}\n"
+            f"Size: {len(img_bytes)} bytes\n"
+            f"__VISION_B64__::{img_b64}"
+        )

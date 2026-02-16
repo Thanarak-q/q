@@ -69,6 +69,18 @@ class LogConfig:
 
 
 @dataclass(frozen=True)
+class BrowserVisionConfig:
+    """Browser vision and watch mode configuration."""
+
+    vision_enabled: bool = os.getenv("BROWSER_VISION", "true").lower() == "true"
+    watch_mode: bool = os.getenv("BROWSER_WATCH", "false").lower() == "true"
+    slow_mo_ms: int = int(os.getenv("BROWSER_SLOW_MO", "300"))
+    max_screenshots: int = int(os.getenv("BROWSER_MAX_SCREENSHOTS", "5"))
+    viewport_width: int = int(os.getenv("BROWSER_VIEWPORT_W", "1280"))
+    viewport_height: int = int(os.getenv("BROWSER_VIEWPORT_H", "720"))
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     """Multi-agent pipeline configuration."""
 
@@ -91,6 +103,7 @@ class AppConfig:
     docker: DockerConfig = field(default_factory=DockerConfig)
     log: LogConfig = field(default_factory=LogConfig)
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
+    browser_vision: BrowserVisionConfig = field(default_factory=BrowserVisionConfig)
     sandbox_mode: str = os.getenv("SANDBOX_MODE", "docker")
 
 

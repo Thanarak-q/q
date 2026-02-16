@@ -531,6 +531,8 @@ def chat_loop(
     verbose: bool = False,
     repo_path: str | None = None,
     config_path: str | None = None,
+    watch_mode: bool = False,
+    no_vision: bool = False,
 ) -> None:
     """Run the main interactive chat loop.
 
@@ -538,6 +540,8 @@ def chat_loop(
         verbose: Enable verbose output.
         repo_path: Optional path to source code for white-box analysis.
         config_path: Optional path to YAML config file.
+        watch_mode: Open visible browser window for watching.
+        no_vision: Disable screenshot vision mode.
     """
     # Load config
     config = load_config()
@@ -555,6 +559,27 @@ def chat_loop(
             "  export OPENAI_API_KEY=sk-...\n"
         )
         sys.exit(1)
+
+    # Apply CLI browser vision/watch overrides
+    if watch_mode or no_vision:
+        from config import BrowserVisionConfig
+        config = AppConfig(
+            model=config.model,
+            agent=config.agent,
+            tool=config.tool,
+            docker=config.docker,
+            log=config.log,
+            pipeline=config.pipeline,
+            browser_vision=BrowserVisionConfig(
+                vision_enabled=not no_vision and config.browser_vision.vision_enabled,
+                watch_mode=watch_mode or config.browser_vision.watch_mode,
+                slow_mo_ms=config.browser_vision.slow_mo_ms,
+                max_screenshots=config.browser_vision.max_screenshots,
+                viewport_width=config.browser_vision.viewport_width,
+                viewport_height=config.browser_vision.viewport_height,
+            ),
+            sandbox_mode=config.sandbox_mode,
+        )
 
     # Init display and state
     display = Display()

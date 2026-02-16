@@ -1033,7 +1033,13 @@ class Orchestrator:
         if result.success:
             self._pivot.record_progress(self._iteration)
 
-        self._context.add_tool_result(tc_id, enriched_output)
+        # Vision handling: detect __VISION_B64__ markers and inject
+        # as a separate user message with image content
+        vision_b64, text_for_tool = self._extract_vision_data(enriched_output)
+        self._context.add_tool_result(tc_id, text_for_tool)
+
+        if vision_b64:
+            self._inject_vision_message(vision_b64, name)
 
         # Dashboard update
         if self._dashboard:
@@ -1323,6 +1329,66 @@ class Orchestrator:
                     return "__SHOULD_STOP__"
 
         return None
+
+    # ------------------------------------------------------------------
+    # Vision helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_vision_data(output: str) -> tuple[str | None, str]:
+        """Extract __VISION_B64__ marker from tool output.
+
+        Args:
+            output: Tool output that may contain vision markers.
+
+        Returns:
+            (base64_data, cleaned_text) — base64 is None if no marker.
+        """
+        marker = "__VISION_B64__::"
+        if marker not in output:
+            return None, output
+
+        idx = output.index(marker)
+        text_part = output[:idx].rstrip()
+        b64_part = output[idx + len(marker):]
+        # b64 might have trailing whitespace or extra markers
+        b64_part = b64_part.strip().split("\n")[0].strip()
+        return b64_part, text_part
+
+    def _inject_vision_message(self, b64_data: str, tool_name: str) -> None:
+        """Inject a multimodal user message with a screenshot.
+
+        OpenAI vision API expects image_url content parts in user messages.
+
+        Args:
+            b64_data: Base64-encoded image data.
+            tool_name: Tool that produced the screenshot (for context).
+        """
+        prompt_text = (
+            f"Above is a screenshot/image from the {tool_name} tool. "
+            "Look for: flags, hidden text, visual clues, CAPTCHAs, "
+            "images containing text, QR codes, "
+            "anything relevant to the challenge."
+        )
+
+        # Determine MIME type (screenshots are always PNG, downloads vary)
+        mime = "image/png"
+
+        self._context._messages.append({  # noqa: SLF001
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime};base64,{b64_data}",
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": prompt_text,
+                },
+            ],
+        })
 
     # ------------------------------------------------------------------
     # Helpers

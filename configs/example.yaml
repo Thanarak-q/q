@@ -48,6 +48,16 @@ target:
     - "/logout"
     - "/static"
 
+# Browser settings (vision + watch mode)
+browser:
+  vision: true          # Screenshot + send to model (default: true for web)
+  watch: false          # Open visible browser window (default: false)
+  slow_mo: 300          # Delay between actions in watch mode (ms)
+  max_screenshots: 5    # Max vision screenshots per session (save tokens)
+  viewport:
+    width: 1280
+    height: 720
+
 # Output settings
 output:
   report_dir: "reports"

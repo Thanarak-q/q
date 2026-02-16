@@ -410,6 +410,44 @@ START -> What did recon find?
 
 ---
 
+## Visual Analysis (Vision Mode)
+
+Q can SEE web pages via screenshots. Use this for:
+
+### When to look at screenshots:
+- Page loaded but text content seems empty → flag might be in image/canvas
+- Challenge mentions "look carefully" or "what do you see"
+- After login/action → check if flag appears visually
+- Suspect hidden text (white text on white background, tiny font)
+
+### When to download images:
+- See an `<img>` tag that looks suspicious
+- Challenge is about steganography
+- Image filename looks interesting (flag.png, secret.jpg, hidden.bmp)
+
+### Workflow:
+1. `browser(action="navigate", url="...")` → auto-screenshot → model sees page
+2. See interesting image? → `browser(action="download_image", selector="img#flag")` → model analyzes
+3. Need steg analysis? → download image → run steg tools on saved file:
+   ```
+   shell: steghide extract -sf sessions/screenshots/image_1.jpg
+   shell: zsteg sessions/screenshots/image_1.png
+   shell: exiftool sessions/screenshots/image_1.png
+   shell: strings sessions/screenshots/image_1.png | grep -i flag
+   ```
+
+### Visual clues to watch for:
+- Text rendered in images or canvas (not in HTML)
+- QR codes embedded in page
+- Hidden elements (opacity: 0, display: none) — check via execute_js
+- Tiny or same-color text — reveal with:
+  ```
+  browser(action="execute_js", script="document.querySelectorAll('*').forEach(e => e.style.color = 'red')")
+  browser(action="screenshot")
+  ```
+
+---
+
 ## CRITICAL RULES FOR AGENT
 
 1. **Recon first** — identify stack before attacking
