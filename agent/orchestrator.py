@@ -38,7 +38,9 @@ from prompts.strategies import FINAL_ATTEMPT_PROMPT
 from prompts.system import build_system_prompt
 from report.generator import generate_report, save_report
 from tools.code_analyzer import CodeAnalyzer
+from tools.error_analyzer import ErrorAnalyzer
 from tools.evidence_tracker import EvidenceTracker, extract_claims
+from tools.output_summarizer import OutputSummarizer
 from tools.registry import ToolRegistry
 from tools.response_parser import ResponseParser
 from tools.web_state import WebState
@@ -265,6 +267,11 @@ class Orchestrator:
         # Evidence tracking (anti-hallucination)
         self._evidence = EvidenceTracker()
 
+        # Error analysis and output summarization
+        self._error_analyzer = ErrorAnalyzer()
+        self._output_summarizer = OutputSummarizer()
+        self._thinking_warnings = 0
+
         # Web state tracking (multi-step exploit state)
         self._web_state = WebState()
         self._response_parser = ResponseParser()
@@ -356,6 +363,8 @@ class Orchestrator:
         self._start_time = time.time()
         self._evidence = EvidenceTracker()  # reset for each solve
         self._web_state = WebState()  # reset for each solve
+        self._error_analyzer.reset()  # reset for each solve
+        self._thinking_warnings = 0
         if target_url:
             self._web_state.base_url = target_url
 
@@ -798,6 +807,22 @@ class Orchestrator:
                 if flags:
                     return self._flag_found(flags, category, text_content)
 
+            # --- Thinking validation ---
+            thinking_warning = self._validate_thinking(
+                text_content, self._iteration - 1,
+            )
+            if thinking_warning == "__SHOULD_STOP__":
+                # Agent thinks it's done but didn't call answer_user
+                self._context.add_user_message(
+                    "Your <think> says you're done. "
+                    "Call answer_user NOW with your answer."
+                )
+                continue
+            elif thinking_warning and self._thinking_warnings < 2:
+                self._context.add_user_message(thinking_warning)
+                self._thinking_warnings += 1
+                continue
+
             # --- Process tool calls ---
             tool_calls = response_message.get("tool_calls")
             if tool_calls:
@@ -962,14 +987,33 @@ class Orchestrator:
 
         output = result.output if result.success else f"[ERROR] {result.error}"
 
-        # Record evidence for anti-hallucination tracking
+        # Record evidence for anti-hallucination tracking (raw output)
         command_str = json.dumps(args, ensure_ascii=False)[:300]
         self._evidence.add(tool=name, command=command_str, output=output)
 
+        # Summarize long outputs to save context tokens
+        summarized_output = self._output_summarizer.summarize(
+            tool=name, command=command_str, output=output,
+        )
+
         # Smart response parsing for web tools (network, browser, recon)
-        enriched_output = output
+        enriched_output = summarized_output
         if result.success and name in ("network", "browser", "recon"):
-            enriched_output = self._enrich_web_output(name, args, output)
+            enriched_output = self._enrich_web_output(name, args, summarized_output)
+
+        # Error analysis and adaptation guidance
+        error_info = self._error_analyzer.analyze(output)
+        if error_info:
+            self._error_analyzer.track_failure(
+                f"{name}: {command_str[:100]} → {error_info['error_type']}"
+            )
+            enriched_output = (
+                f"{enriched_output}\n\n"
+                f"⚠️ ERROR DETECTED: {error_info['error_type']}\n"
+                f"SUGGESTION: {error_info['suggestion']}\n"
+                f"{self._error_analyzer.get_failure_context()}\n"
+                f"Think about WHY this failed and try a DIFFERENT approach."
+            )
 
         self._cb.on_tool_result(name, output, result.success)
 
@@ -1238,6 +1282,47 @@ class Orchestrator:
             self._cb.on_report_saved(str(report_path))
         except Exception as exc:
             self._log.debug(f"Report generation failed: {exc}")
+
+    # ------------------------------------------------------------------
+    # Thinking validation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_thinking(response_text: str, step: int) -> str | None:
+        """Check if the agent is thinking before acting.
+
+        Returns:
+            Warning message if not thinking, "__SHOULD_STOP__" if agent
+            says it's done, or None if everything is fine.
+        """
+        import re
+
+        has_think = "<think>" in response_text
+
+        if not has_think and step == 0:
+            return (
+                "You must plan first. Use <think> to write: "
+                "GOAL, PLAN, SCOPE, DONE WHEN before your first action."
+            )
+
+        if not has_think and step > 0:
+            return (
+                "Think before acting. Use <think> to write: "
+                "LEARNED, HYPOTHESIS, NEXT, DONE? "
+                "before every tool call."
+            )
+
+        # Check for "DONE? yes" pattern — agent should stop
+        if has_think:
+            think_match = re.search(
+                r'<think>(.*?)</think>', response_text, re.DOTALL,
+            )
+            if think_match:
+                content = think_match.group(1).lower()
+                if 'done?' in content and 'yes' in content:
+                    return "__SHOULD_STOP__"
+
+        return None
 
     # ------------------------------------------------------------------
     # Helpers

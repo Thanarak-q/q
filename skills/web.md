@@ -2,6 +2,39 @@
 
 Quick reference. Recon fast, exploit targeted.
 
+> **How to Use This Skill File:** This is a REFERENCE, not a script.
+> Do NOT follow it top to bottom. Read the relevant section for YOUR
+> challenge, understand the technique, adapt to THIS specific target,
+> and form a hypothesis FIRST, then pick the right tool. Pick tools
+> based on what you OBSERVE, not based on the order listed here.
+
+---
+
+## Decision Logic (use your brain, not a checklist)
+
+What did recon tell you?
+```
+├── Found login form?
+│   ├── Has username+password? → Try SQLi first
+│   ├── Has JWT cookie? → Try JWT attacks first
+│   └── Has OAuth/SSO? → Try redirect manipulation
+├── Found input field (search, comment, etc)?
+│   ├── Reflected in page? → Try XSS, SSTI
+│   └── Used in query? → Try SQLi, NoSQLi
+├── Found file parameter?
+│   └── Try LFI → path traversal → RFI
+├── Found API endpoint?
+│   ├── Try IDOR (change IDs)
+│   ├── Try mass assignment
+│   └── Try SSRF if accepts URLs
+└── Found nothing obvious?
+    └── Check source, comments, JS files, robots.txt
+```
+
+Adapt: If approach A fails, don't just try approach B.
+Think about WHY A failed. Is there a WAF? Wrong parameter?
+Wrong endpoint? Use the error to guide your next attempt.
+
 ---
 
 ## Recon (Do This First for Live Targets)

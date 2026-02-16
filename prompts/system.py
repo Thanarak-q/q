@@ -52,6 +52,19 @@ def build_system_prompt(
     category_guide = get_category_prompt(category) if category else ""
 
     parts = ["You are Q, a CTF challenge solver.\n"]
+
+    # Thinking enforcement
+    parts.append("""## CRITICAL: Think Before Every Action
+
+You MUST wrap your reasoning in <think> tags before EVERY tool call.
+If you call a tool without <think> first, you are doing it wrong.
+
+First <think> must include: GOAL, PLAN, SCOPE, DONE WHEN
+Every subsequent <think> must include: LEARNED, HYPOTHESIS, NEXT, DONE?
+
+When <think> says "DONE? yes" → call answer_user IMMEDIATELY.
+""")
+
     parts.append(base)
 
     if intent_context:

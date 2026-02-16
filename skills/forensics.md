@@ -2,6 +2,12 @@
 
 Quick reference. Be efficient — run the right command first, not everything.
 
+> **How to Use This Skill File:** This is a REFERENCE, not a script.
+> Do NOT follow it top to bottom. Read the relevant section for YOUR
+> challenge, understand the technique, adapt to THIS specific target,
+> and form a hypothesis FIRST, then pick the right tool. Pick tools
+> based on what you OBSERVE, not based on the order listed here.
+
 ---
 
 ## First Steps (ALWAYS do these first)
