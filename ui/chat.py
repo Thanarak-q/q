@@ -429,6 +429,10 @@ def run_solve(
         yaml_config_path=state.yaml_config_path,
     )
 
+    if state.solving:
+        display.show_error("Already solving. Wait or Ctrl+C to stop.")
+        return None
+
     state.solving = True
     callbacks.reset_for_new_solve()
 
@@ -446,7 +450,7 @@ def run_solve(
             raise KeyboardInterrupt
         _last_ctrl_c[0] = now
         display.console.print(
-            "\n  [warning]Agent stopped. Session saved. "
+            "\n  [warning]Stopping agent... "
             "/resume to continue[/warning]"
         )
         orch.cancel()

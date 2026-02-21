@@ -10,6 +10,7 @@ Architecture: Classifier -> Single Agent (with skill cheat sheet) -> Auto Report
 from __future__ import annotations
 
 import json
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
@@ -261,6 +262,7 @@ class Orchestrator:
         self._found_flags: list[str] = []
         self._custom_flag_pattern: str | None = None
         self._cancelled = False
+        self._cancel_event = threading.Event()  # shared with parallel solver
         self._intent: IntentResult | None = None
         self._start_time: float = 0.0
         self._audit: AuditLogger | None = None
@@ -329,8 +331,13 @@ class Orchestrator:
         self._current_model = model
 
     def cancel(self) -> None:
-        """Cancel the current solve loop (called from Ctrl+C handler)."""
+        """Cancel the current solve loop (called from Ctrl+C handler).
+
+        Also signals the shared cancel event so parallel solver threads
+        see the cancellation immediately.
+        """
         self._cancelled = True
+        self._cancel_event.set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -361,6 +368,8 @@ class Orchestrator:
         """
         self._custom_flag_pattern = flag_pattern
         self._cancelled = False
+        # Don't clear _cancel_event here — it may be shared from a parent
+        # parallel solver.  The event is fresh per Orchestrator __init__.
         self._start_time = time.time()
         self._evidence = EvidenceTracker()  # reset for each solve
         self._web_state = WebState()  # reset for each solve
@@ -713,9 +722,13 @@ class Orchestrator:
         """
         max_iter = max_iterations_override or self._config.agent.max_iterations
 
+        # Repair any broken tool_call messages from previous runs/crashes
+        self._repair_tool_messages()
+
         while self._iteration < max_iter:
-            # Check cancellation
-            if self._cancelled:
+            # Check cancellation (flag or shared event from Ctrl+C)
+            if self._cancelled or self._cancel_event.is_set():
+                self._cancelled = True
                 self._cb.on_error("Cancelled by user.")
                 break
 
@@ -804,16 +817,58 @@ class Orchestrator:
                     cost_usd=llm_cost,
                 ))
 
-                flags = extract_flags(text_content, self._custom_flag_pattern)
-                if flags:
-                    return self._flag_found(flags, category, text_content)
+            # --- Process tool calls FIRST ---
+            # IMPORTANT: OpenAI API requires a tool response for EVERY
+            # tool_call_id in the assistant message.  This MUST happen
+            # before any `continue` or `return` that could skip it,
+            # otherwise the next _call_llm sees broken messages → 400.
+            tool_calls = response_message.get("tool_calls")
+            answer_tc: dict[str, Any] | None = None
+            all_found_flags: list[str] = []
 
-            # --- Thinking validation ---
+            if tool_calls:
+                for idx, tc in enumerate(tool_calls):
+                    func = tc.get("function", {})
+                    tc_id = tc["id"]
+
+                    if self._cancelled or self._cancel_event.is_set():
+                        # Cancelled — add stub responses for this + rest
+                        self._context.add_tool_result(
+                            tc_id, "[CANCELLED] Agent stopped by user."
+                        )
+                        continue
+
+                    if func.get("name") == "answer_user":
+                        # Defer answer_user — process remaining tools first
+                        # so every tool_call_id gets a response
+                        answer_tc = tc
+                        continue
+
+                    flags = self._execute_tool_call(tc)
+                    if flags:
+                        all_found_flags.extend(flags)
+
+            # --- Now safe to return/continue — all tool_call_ids responded ---
+
+            # Handle deferred answer_user
+            if answer_tc is not None:
+                return self._handle_answer_user(answer_tc, category)
+
+            # Flags found in tool output
+            if all_found_flags:
+                return self._flag_found(all_found_flags, category)
+
+            # Flags found in text content
+            if text_content:
+                text_flags = extract_flags(text_content, self._custom_flag_pattern)
+                if text_flags:
+                    return self._flag_found(text_flags, category, text_content)
+
+            # --- Thinking validation (safe to continue now) ---
             thinking_warning = self._validate_thinking(
                 text_content, self._iteration - 1,
             )
             if thinking_warning == "__SHOULD_STOP__":
-                # Agent thinks it's done but didn't call answer_user
                 self._context.add_user_message(
                     "Your <think> says you're done. "
                     "Call answer_user NOW with your answer."
@@ -824,22 +879,7 @@ class Orchestrator:
                 self._thinking_warnings += 1
                 continue
 
-            # --- Process tool calls ---
-            tool_calls = response_message.get("tool_calls")
-            if tool_calls:
-                for tc in tool_calls:
-                    if self._cancelled:
-                        break
-
-                    # Check if this is an answer_user call
-                    func = tc.get("function", {})
-                    if func.get("name") == "answer_user":
-                        return self._handle_answer_user(tc, category)
-
-                    flags = self._execute_tool_call(tc)
-                    if flags:
-                        return self._flag_found(flags, category)
-            elif not text_content:
+            if not tool_calls and not text_content:
                 self._log.warning("Empty response from LLM")
 
             # --- Status update ---
@@ -898,6 +938,9 @@ class Orchestrator:
         tools = self._registry.openai_definitions()
 
         for attempt in range(3):
+            # Check cancellation before each attempt
+            if self._cancelled or self._cancel_event.is_set():
+                return None
             try:
                 response = self._client.chat.completions.create(
                     model=model,
@@ -944,12 +987,70 @@ class Orchestrator:
                 self._log.error(
                     f"API error (attempt {attempt + 1}/3): {exc}"
                 )
+                # Detect broken tool_call messages and repair them
+                if "tool_call_id" in str(exc) and "did not have response" in str(exc):
+                    self._repair_tool_messages()
+                    # After repair, retry immediately (don't sleep)
+                    continue
                 if attempt == 2:
                     self._cb.on_error(f"API error after 3 retries: {exc}")
                     return None
                 time.sleep(2**attempt)
 
         return None
+
+    def _repair_tool_messages(self) -> None:
+        """Scan message history and add missing tool responses.
+
+        OpenAI requires every tool_call_id in an assistant message to
+        have a corresponding tool-role response.  If any are missing
+        (e.g. from a previous crash or bug), this patches them in so
+        the next API call won't 400.
+        """
+        messages = self._context.messages
+        # Collect all tool_call_ids that already have responses
+        responded: set[str] = set()
+        for msg in messages:
+            if msg.get("role") == "tool":
+                tcid = msg.get("tool_call_id")
+                if tcid:
+                    responded.add(tcid)
+
+        # Walk messages and find assistant messages with unresponded tool_calls
+        repaired = 0
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                missing = [
+                    tc for tc in msg["tool_calls"]
+                    if tc.get("id") and tc["id"] not in responded
+                ]
+                if missing:
+                    # Find the insertion point: skip past any existing
+                    # tool responses that follow this assistant message
+                    insert_pos = i + 1
+                    while (
+                        insert_pos < len(messages)
+                        and messages[insert_pos].get("role") == "tool"
+                    ):
+                        insert_pos += 1
+                    for tc in missing:
+                        stub = {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": "(No response — recovered from error)",
+                        }
+                        messages.insert(insert_pos, stub)
+                        responded.add(tc["id"])
+                        insert_pos += 1
+                        repaired += 1
+            i += 1
+
+        if repaired:
+            self._log.warning(
+                f"Repaired {repaired} missing tool response(s) in message history"
+            )
 
     # ------------------------------------------------------------------
     # Tool execution
@@ -1122,7 +1223,7 @@ class Orchestrator:
                 corrected_msg = self._call_llm()
                 if corrected_msg is not None:
                     self._context.add_assistant_message(corrected_msg)
-                    # Check if the corrected response calls answer_user
+                    # Respond to ALL tool_calls in the corrected message
                     tc_list = corrected_msg.get("tool_calls", [])
                     for corrected_tc in tc_list:
                         cfunc = corrected_tc.get("function", {})
@@ -1135,7 +1236,13 @@ class Orchestrator:
                             confidence = cargs.get("confidence", confidence)
                             flag = cargs.get("flag", "") or flag
                             tc_id = corrected_tc["id"]
-                            break
+                        else:
+                            # Non-answer tool — add stub response so
+                            # every tool_call_id is accounted for
+                            self._context.add_tool_result(
+                                corrected_tc["id"],
+                                "(Skipped — finalising answer)",
+                            )
 
         # Execute the tool so it produces output for logging
         result = self._registry.execute("answer_user", args)
@@ -1380,6 +1487,10 @@ class Orchestrator:
         flag_pattern: str | None,
     ) -> SolveResult | None:
         """Try multiple approaches in parallel as a fallback."""
+        # Don't start parallel if already cancelled
+        if self._cancelled or self._cancel_event.is_set():
+            return None
+
         from agent.parallel import ParallelSolver
 
         self._cb.on_phase(
@@ -1397,6 +1508,7 @@ class Orchestrator:
             workspace=self._workspace,
             max_parallel=max_parallel,
             callbacks=self._cb,
+            cancel_event=self._cancel_event,
         )
 
         attempt = solver.solve_parallel(

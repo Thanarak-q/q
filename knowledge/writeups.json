@@ -1,0 +1,74 @@
+[
+  {
+    "challenge": "test\n\nAPPROACH HINT: Focus on authentication bypass: try default credentials, JWT manipulation (alg:none, weak secret), cookie tampering, mass assignment, PHP type juggling.\nFocus on this specific app",
+    "category": "web",
+    "file_types": [],
+    "techniques": [],
+    "tools_used": [
+      "answer_user"
+    ],
+    "commands": [],
+    "answer": "Here is a focused authentication bypass attack plan for CTF web challenges:\n\n1. Try Default Credentials: Attempt login with common usernames/passwords (admin:admin, admin:password, test:test, root:roo",
+    "flag": "",
+    "steps": 1,
+    "cost": 0.0472,
+    "success": true,
+    "timestamp": "2026-02-21T15:21:20.036276+00:00"
+  },
+  {
+    "challenge": "test\n\nAPPROACH HINT: Focus on server-side attacks: try SSTI ({{7*7}}), LFI (../../etc/passwd, php://filter), and command injection (; id, | id, $(id)).\nFocus on this specific approach. If it doesn't w",
+    "category": "web",
+    "file_types": [],
+    "techniques": [],
+    "tools_used": [
+      "answer_user"
+    ],
+    "commands": [],
+    "answer": "Here is a step-by-step guide for server-side attack attempts on a web challenge, focusing on SSTI, LFI, and command injection:\n\n1. Test for SSTI (Server-Side Template Injection):\n   - Inject payloads ",
+    "flag": "",
+    "steps": 1,
+    "cost": 0.0527,
+    "success": true,
+    "timestamp": "2026-02-21T15:21:22.190803+00:00"
+  },
+  {
+    "challenge": "test\n\nAPPROACH HINT: Focus on SQL injection: test all input fields, URL parameters, and cookies with SQLi payloads. Try UNION-based, boolean-blind, and time-based techniques.\nFocus on this specific ap",
+    "category": "web",
+    "file_types": [],
+    "techniques": [],
+    "tools_used": [
+      "recon"
+    ],
+    "commands": [],
+    "answer": "",
+    "flag": "flag{...}",
+    "steps": 2,
+    "cost": 0.0428,
+    "success": true,
+    "timestamp": "2026-02-21T15:22:22.501380+00:00"
+  },
+  {
+    "challenge": "bro help me and what is Whats the name of the WiFi network in the PCAP? file ctf is VanSpy.pcapng",
+    "category": "forensics",
+    "file_types": [
+      "pcap"
+    ],
+    "techniques": [
+      "tshark field extraction"
+    ],
+    "tools_used": [
+      "answer_user",
+      "file_manager",
+      "shell"
+    ],
+    "commands": [
+      "tshark -r VanSpy.pcapng -Y \"wlan.ssid && wlan.fc.type_subtype == 8\" -T fields -e wlan.ssid | sort | uniq | grep -v '^$' | head -5"
+    ],
+    "answer": "The file VanSpy.pcapng is not present in the current directory, so I cannot extract the WiFi network (SSID) from it. Please provide the VanSpy.pcapng file or ensure it is in the working directory so I",
+    "flag": "",
+    "steps": 5,
+    "cost": 0.0511,
+    "success": true,
+    "timestamp": "2026-02-21T15:24:06.541785+00:00"
+  }
+]

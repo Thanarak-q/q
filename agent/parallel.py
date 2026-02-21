@@ -13,6 +13,7 @@ OpenAI client, context, and cost tracker).
 
 from __future__ import annotations
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -151,12 +152,14 @@ class ParallelSolver:
         workspace: Path | None = None,
         max_parallel: int = 3,
         callbacks: Any = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         self._config = config
         self._docker = docker_manager
         self._workspace = workspace or Path.cwd()
         self._max_parallel = max_parallel
         self._cb = callbacks
+        self._cancel_event = cancel_event or threading.Event()
         self._log = get_logger()
 
     def solve_parallel(
@@ -186,6 +189,11 @@ class ParallelSolver:
 
         if not approaches:
             self._log.info(f"No parallel approaches defined for category: {category}")
+            return None
+
+        # Check cancellation before spawning threads
+        if self._cancel_event.is_set():
+            self._log.info("Parallel solver cancelled before start")
             return None
 
         approaches = approaches[: self._max_parallel]
@@ -218,6 +226,14 @@ class ParallelSolver:
             }
 
             for future in as_completed(futures):
+                # Check cancellation between completed futures
+                if self._cancel_event.is_set():
+                    self._log.info("Parallel solver cancelled")
+                    for f in futures:
+                        f.cancel()
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    return None
+
                 name = futures[future]
                 try:
                     result = future.result(timeout=180)
@@ -276,6 +292,8 @@ class ParallelSolver:
                 workspace=self._workspace,
                 callbacks=NullCallbacks(),
             )
+            # Share the cancel event so Ctrl+C propagates into threads
+            orch._cancel_event = self._cancel_event
 
             result = orch.solve(
                 description=modified_desc,

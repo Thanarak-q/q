@@ -1,0 +1,54 @@
+[
+  {
+    "session_id": "20260221_152103_0096da",
+    "challenge": "test\n\nAPPROACH HINT: Focus on authentication bypass: try default credentials, JWT manipulation (alg:none, weak secret), cookie tampering, mass assignment, PHP type juggling.\nFocus on this specific app",
+    "category": "web",
+    "intent": "help_solve",
+    "success": true,
+    "steps": 1,
+    "tokens": 17099,
+    "cost": 0.0472,
+    "duration": 16.7,
+    "model": "gpt-4.1",
+    "timestamp": "2026-02-21T15:21:20.037688+00:00"
+  },
+  {
+    "session_id": "20260221_152103_3f2b3c",
+    "challenge": "test\n\nAPPROACH HINT: Focus on server-side attacks: try SSTI ({{7*7}}), LFI (../../etc/passwd, php://filter), and command injection (; id, | id, $(id)).\nFocus on this specific approach. If it doesn't w",
+    "category": "web",
+    "intent": "help_solve",
+    "success": true,
+    "steps": 1,
+    "tokens": 18019,
+    "cost": 0.0527,
+    "duration": 18.8,
+    "model": "gpt-4.1",
+    "timestamp": "2026-02-21T15:21:22.191154+00:00"
+  },
+  {
+    "session_id": "20260221_152103_6b341b",
+    "challenge": "test\n\nAPPROACH HINT: Focus on SQL injection: test all input fields, URL parameters, and cookies with SQLi payloads. Try UNION-based, boolean-blind, and time-based techniques.\nFocus on this specific ap",
+    "category": "web",
+    "intent": "find_flag",
+    "success": true,
+    "steps": 2,
+    "tokens": 16532,
+    "cost": 0.0428,
+    "duration": 79.1,
+    "model": "gpt-4.1",
+    "timestamp": "2026-02-21T15:22:22.501864+00:00"
+  },
+  {
+    "session_id": "20260221_152351_039424",
+    "challenge": "bro help me and what is Whats the name of the WiFi network in the PCAP? file ctf is VanSpy.pcapng",
+    "category": "forensics",
+    "intent": "answer_question",
+    "success": true,
+    "steps": 3,
+    "tokens": 19278,
+    "cost": 0.0511,
+    "duration": 15.1,
+    "model": "gpt-4.1",
+    "timestamp": "2026-02-21T15:24:06.542174+00:00"
+  }
+]
