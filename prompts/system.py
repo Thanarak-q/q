@@ -36,6 +36,7 @@ def build_system_prompt(
     extra_context: str = "",
     intent_context: str = "",
     scope: dict | None = None,
+    procedural_hints: str = "",
 ) -> str:
     """Build the complete system prompt with base rules + category guide.
 
@@ -69,6 +70,8 @@ When <think> says "DONE? yes" → call answer_user IMMEDIATELY.
 
     if intent_context:
         parts.append(f"\n## User Intent\n\n{intent_context}")
+    if procedural_hints:
+        parts.append(f"\n{procedural_hints}")
     if category_guide:
         parts.append(f"\n## Reference Guide for {category}\n\n{category_guide}")
     if extra_context:

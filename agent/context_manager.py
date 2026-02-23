@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from openai import OpenAI
-
 from config import AppConfig
 from prompts.strategies import CONTEXT_SUMMARY_REQUEST
 from utils.logger import get_logger
@@ -24,11 +22,11 @@ class ContextManager:
     tracking discoveries.
     """
 
-    def __init__(self, client: OpenAI, config: AppConfig) -> None:
+    def __init__(self, client, config: AppConfig) -> None:
         """Initialise the context manager.
 
         Args:
-            client: OpenAI API client for summarization calls.
+            client: LLM provider (ProviderRouter or compatible) for summarization calls.
             config: Application configuration.
         """
         self._client = client
@@ -157,16 +155,16 @@ class ContextManager:
                 summary_text += f"[{role}]: {content[:500]}\n"
 
         try:
-            response = self._client.chat.completions.create(
+            result = self._client.chat(
                 model=self._model,
-                temperature=0.1,
-                max_tokens=1024,
                 messages=[
                     {"role": "system", "content": CONTEXT_SUMMARY_REQUEST},
                     {"role": "user", "content": summary_text},
                 ],
+                temperature=0.1,
+                max_tokens=1024,
             )
-            summary = response.choices[0].message.content.strip()
+            summary = result["message"]["content"].strip()
         except Exception as exc:
             self._log.error(f"Summarization failed: {exc}")
             summary = "(Summary unavailable due to error)"

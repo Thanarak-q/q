@@ -18,7 +18,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from openai import APIError, OpenAI, RateLimitError
+from agent.providers import create_provider
+from agent.providers.base import LLMProvider
 
 from agent.classifier import (
     Category,
@@ -126,6 +127,10 @@ class AgentCallbacks(ABC):
     def on_iteration(self, current: int, total: int) -> None:
         """Called at the start of each iteration."""
 
+    def on_thinking_delta(self, delta: str) -> None:
+        """Called with each streaming chunk of LLM thinking. Non-abstract for backwards compat."""
+        pass
+
     def on_report_saved(self, path: str) -> None:
         """Called when a solve report is saved to disk."""
 
@@ -194,6 +199,9 @@ class NullCallbacks(AgentCallbacks):
     def on_iteration(self, current: int, total: int) -> None:
         console.rule(f"[step]Iteration {current}/{total}[/step]")
 
+    def on_thinking_delta(self, delta: str) -> None:
+        pass
+
     def on_report_saved(self, path: str) -> None:
         console.print(f"[result]Report saved: {path}[/result]")
 
@@ -248,9 +256,10 @@ class Orchestrator:
         cost_tracker: CostTracker | None = None,
         repo_path: str | None = None,
         yaml_config_path: str | None = None,
+        hooks_path: str | None = None,
     ) -> None:
         self._config = config or load_config()
-        self._client = OpenAI(api_key=self._config.model.api_key)
+        self._provider = create_provider(self._config.model)
         self._workspace = workspace or Path.cwd()
         self._docker = docker_manager
         self._registry = ToolRegistry(
@@ -258,7 +267,7 @@ class Orchestrator:
             workspace=self._workspace,
             vision_config=self._config.browser_vision,
         )
-        self._context = ContextManager(self._client, self._config)
+        self._context = ContextManager(self._provider, self._config)
         self._log = get_logger()
         self._iteration = 0
         self._found_flags: list[str] = []
@@ -307,6 +316,22 @@ class Orchestrator:
                 self._yaml_config = load_yaml_config(yaml_config_path)
             except Exception:
                 pass
+
+        # Hooks system
+        from agent.hooks import HookEngine
+        self._hooks = HookEngine()
+        _hooks_path = hooks_path  # explicit --hooks flag takes priority
+        if not _hooks_path and yaml_config_path:
+            try:
+                _hooks_path = self._yaml_config.hooks_path if self._yaml_config and hasattr(self._yaml_config, 'hooks_path') else None
+            except Exception:
+                pass
+        if not _hooks_path:
+            default_hooks = Path(__file__).resolve().parent.parent / "configs" / "hooks.yaml"
+            if default_hooks.exists():
+                _hooks_path = str(default_hooks)
+        if _hooks_path:
+            self._hooks = HookEngine.from_yaml(_hooks_path)
 
         # Callbacks (use NullCallbacks for backward compat)
         self._cb: AgentCallbacks = callbacks or NullCallbacks()
@@ -522,6 +547,14 @@ class Orchestrator:
         # Record to knowledge base + stats
         self._record_knowledge_and_stats(description, result)
 
+        # Post-solve hooks
+        self._hooks.post_solve(
+            status=final_status,
+            flags=result.flags,
+            cost=self._cost.total_cost,
+            steps=result.iterations,
+        )
+
         return result
 
     def resume(
@@ -625,7 +658,7 @@ class Orchestrator:
         # --- Phase 0: Intent classification ---
         self._cb.on_phase("Intent", "Classifying user intent...")
         self._session.transition(WorkflowState.CLASSIFYING, "Intent classification")
-        self._intent = classify_intent(description, self._client, self._config)
+        self._intent = classify_intent(description, self._provider, self._config)
         self._cb.on_phase(
             "Intent",
             f"{self._intent.intent.value} — {self._intent.stop_criteria}",
@@ -644,7 +677,7 @@ class Orchestrator:
             self._cb.on_phase("Category", f"{category.value} (forced)")
         else:
             category = classify_challenge(
-                description, file_info, self._client, self._config
+                description, file_info, self._provider, self._config
             )
             self._cb.on_phase("Category", category.value)
 
@@ -659,7 +692,7 @@ class Orchestrator:
         self._session.transition(WorkflowState.PLANNING, f"Category: {category.value}")
         self._cb.on_phase("Planning", "Creating attack plan...")
         plan = create_plan(
-            description, category, file_info, self._client, self._config
+            description, category, file_info, self._provider, self._config
         )
         self._cb.on_thinking(plan)
         self._session.update(plan=plan)
@@ -674,7 +707,16 @@ class Orchestrator:
         )
         self._log.info(f"Initial model: {self._current_model}")
 
-        # --- Phase 2.5: Knowledge base hints ---
+        # --- Phase 2.5: Procedural memory hints ---
+        procedural_hints = ""
+        try:
+            from knowledge.procedural import ProceduralMemory
+            pmem = ProceduralMemory()
+            procedural_hints = pmem.format_hints(description, category.value)
+        except Exception:
+            pass
+
+        # --- Phase 2.5b: Knowledge base hints ---
         knowledge_hint = self._get_knowledge_hints(description, category.value)
 
         # --- Phase 2.6: Source code analysis (white-box) ---
@@ -711,6 +753,7 @@ class Orchestrator:
             extra_context=extra_ctx,
             intent_context=intent_context,
             scope=scope,
+            procedural_hints=procedural_hints,
         )
         self._context.set_system_prompt(system_prompt)
 
@@ -862,7 +905,10 @@ class Orchestrator:
 
             # --- Call LLM ---
             cost_records_before = len(self._cost.records)
-            response_message = self._call_llm()
+            if self._config.model.streaming:
+                response_message = self._call_llm_streaming()
+            else:
+                response_message = self._call_llm()
             if response_message is None:
                 continue
 
@@ -1033,48 +1079,30 @@ class Orchestrator:
             if self._cancelled or self._cancel_event.is_set():
                 return None
             try:
-                response = self._client.chat.completions.create(
+                result = self._provider.chat(
                     model=model,
-                    temperature=self._config.model.temperature,
-                    max_tokens=self._config.model.max_tokens,
                     messages=self._context.messages,
                     tools=tools,
                     tool_choice="auto",
+                    temperature=self._config.model.temperature,
+                    max_tokens=self._config.model.max_tokens,
                 )
-                msg = response.choices[0].message
+                msg_dict = result["message"]
+                usage = result["usage"]
 
                 # Track cost
-                if response.usage:
+                if usage:
                     self._cost.record(
                         model=model,
-                        usage=response.usage,
+                        usage=usage,
                         iteration=self._iteration,
                     )
 
-                # Convert to dict for storage
-                msg_dict: dict[str, Any] = {
-                    "role": "assistant",
-                    "content": msg.content,
-                }
-                if msg.tool_calls:
-                    msg_dict["tool_calls"] = [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for tc in msg.tool_calls
-                    ]
                 return msg_dict
 
-            except RateLimitError:
-                wait = 2 ** (attempt + 1)
-                self._log.warning(f"Rate limited, waiting {wait}s...")
-                time.sleep(wait)
-            except APIError as exc:
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
                 self._log.error(
                     f"API error (attempt {attempt + 1}/3): {exc}"
                 )
@@ -1082,6 +1110,90 @@ class Orchestrator:
                 if "tool_call_id" in str(exc) and "did not have response" in str(exc):
                     self._repair_tool_messages()
                     # After repair, retry immediately (don't sleep)
+                    continue
+                if attempt == 2:
+                    self._cb.on_error(f"API error after 3 retries: {exc}")
+                    return None
+                time.sleep(2**attempt)
+
+        return None
+
+    def _call_llm_streaming(self) -> dict[str, Any] | None:
+        """Call LLM with streaming enabled, yielding thinking deltas to callbacks."""
+        model = self._current_model
+        tools = self._registry.openai_definitions()
+
+        for attempt in range(3):
+            if self._cancelled or self._cancel_event.is_set():
+                return None
+            try:
+                content_parts: list[str] = []
+                tool_calls_by_index: dict[int, dict] = {}
+                usage_data = None
+
+                for event in self._provider.chat_stream(
+                    model=model,
+                    messages=self._context.messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=self._config.model.temperature,
+                    max_tokens=self._config.model.max_tokens,
+                ):
+                    etype = event.get("type")
+
+                    if etype == "content_delta":
+                        content_parts.append(event["content"])
+                        self._cb.on_thinking_delta(event["content"])
+
+                    elif etype == "tool_call_delta":
+                        idx = event["index"]
+                        if idx not in tool_calls_by_index:
+                            tool_calls_by_index[idx] = {
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        tc = tool_calls_by_index[idx]
+                        if event.get("id"):
+                            tc["id"] = event["id"]
+                        if event.get("name"):
+                            tc["function"]["name"] += event["name"]
+                        if event.get("arguments"):
+                            tc["function"]["arguments"] += event["arguments"]
+
+                    elif etype == "usage":
+                        usage_data = event["usage"]
+
+                    elif etype == "done":
+                        break
+
+                # Track cost
+                if usage_data:
+                    self._cost.record(
+                        model=model,
+                        usage=usage_data,
+                        iteration=self._iteration,
+                    )
+
+                # Build result in same format as _call_llm()
+                msg_dict: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "".join(content_parts) if content_parts else None,
+                }
+                if tool_calls_by_index:
+                    msg_dict["tool_calls"] = [
+                        tool_calls_by_index[i] for i in sorted(tool_calls_by_index)
+                    ]
+                return msg_dict
+
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                self._log.error(
+                    f"API error (attempt {attempt + 1}/3): {exc}"
+                )
+                if "tool_call_id" in str(exc) and "did not have response" in str(exc):
+                    self._repair_tool_messages()
                     continue
                 if attempt == 2:
                     self._cb.on_error(f"API error after 3 retries: {exc}")
@@ -1182,6 +1294,14 @@ class Orchestrator:
                 step=self._iteration, tool=name, args=args,
             )
 
+        # Pre-tool-call hook check
+        allowed, hook_msg = self._hooks.pre_tool_call(name, args)
+        if not allowed:
+            blocked_output = f"[BLOCKED BY HOOK] {hook_msg}"
+            self._cb.on_tool_result(name, blocked_output, False)
+            self._context.add_tool_result(tc_id, blocked_output)
+            return []
+
         result = self._registry.execute(name, args)
 
         output = result.output if result.success else f"[ERROR] {result.error}"
@@ -1262,6 +1382,8 @@ class Orchestrator:
             self._found_flags.extend(flags)
             for f in flags:
                 self._cb.on_flag_found(f)
+            for f in flags:
+                self._hooks.post_flag(f)
             if self._dashboard:
                 for f in flags:
                     self._dashboard.add_flag(f)
@@ -1940,7 +2062,7 @@ class Orchestrator:
             from knowledge.base import KnowledgeBase
 
             kb = KnowledgeBase()
-            similar = kb.search(description, category=category, limit=2)
+            similar = kb.search_semantic(description, category=category, limit=2)
             if not similar:
                 return ""
 
@@ -1980,6 +2102,18 @@ class Orchestrator:
             KnowledgeBase().add(entry)
         except Exception as exc:
             self._log.debug(f"Knowledge save failed: {exc}")
+
+        # Record procedural memory
+        try:
+            from knowledge.procedural import ProceduralMemory
+            pmem = ProceduralMemory()
+            if result.flags or result.answer:
+                pmem.record_success(description, result.category or "misc", steps_log)
+            else:
+                pivot_reasons = self._pivot.get_reasons() if hasattr(self, '_pivot') else []
+                pmem.record_failure(description, result.category or "misc", steps_log, pivot_reasons)
+        except Exception as e:
+            self._log.debug(f"Procedural memory recording failed: {e}")
 
         try:
             from stats.tracker import StatsTracker

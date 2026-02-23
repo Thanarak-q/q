@@ -137,6 +137,9 @@ class ToolRegistry:
         self.register(PwntoolsSessionTool())
         self.register(NetcatSessionTool())
 
+        from tools.symbolic import SymbolicTool
+        self.register(SymbolicTool())
+
     @classmethod
     def from_subset(
         cls,

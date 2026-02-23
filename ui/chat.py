@@ -151,6 +151,13 @@ class ChatCallbacks(AgentCallbacks):
             for line in text.splitlines():
                 self._display.console.print(f"│     [dim]{line}[/dim]")
 
+    def on_thinking_delta(self, delta: str) -> None:
+        """Stream thinking text in verbose mode."""
+        if self._state.verbose:
+            import sys
+            sys.stdout.write(delta)
+            sys.stdout.flush()
+
     # -- Tool calls ------------------------------------------------
 
     def on_tool_call(self, tool_name: str, args: dict) -> None:
@@ -426,6 +433,7 @@ def run_solve(
     state: ChatState,
     display: Display,
     callbacks: ChatCallbacks,
+    watch_mode: bool = False,
 ) -> SolveResult | None:
     """Run the solve pipeline for a challenge description."""
     # Shared cost tracker across session
@@ -473,35 +481,72 @@ def run_solve(
 
     signal.signal(signal.SIGINT, cancel_handler)
 
-    spinner = PhaseSpinner(display.console)
-    try:
-        with spinner:
-            callbacks.set_spinner(spinner)
-            if state.resume_session_id:
-                sid = state.resume_session_id
-                state.resume_session_id = None
-                result = orch.resume(
-                    session_id=sid,
-                    flag_pattern=state.flag_pattern,
-                )
-            else:
-                result = orch.solve(
-                    description=description,
-                    files=state.pending_files or None,
-                    target_url=state.pending_url,
-                    flag_pattern=state.flag_pattern,
-                    forced_category=state.forced_category,
-                )
-    except KeyboardInterrupt:
-        display.show_error("Interrupted.")
-        result = None
-    finally:
-        callbacks.set_spinner(None)
-        signal.signal(signal.SIGINT, original_handler)
-        state.solving = False
-        state.pending_files = []
-        state.pending_url = None
-        state.forced_category = None
+    if watch_mode:
+        try:
+            from ui.watch import WatchDisplay, WatchCallbacks
+            watch_display = WatchDisplay()
+            watch_cb = WatchCallbacks(callbacks, watch_display, callbacks._tree)
+            orch._cb = watch_cb  # Replace callbacks for watch mode
+            try:
+                with watch_display:
+                    if state.resume_session_id:
+                        sid = state.resume_session_id
+                        state.resume_session_id = None
+                        result = orch.resume(
+                            session_id=sid,
+                            flag_pattern=state.flag_pattern,
+                        )
+                    else:
+                        result = orch.solve(
+                            description=description,
+                            files=state.pending_files or None,
+                            target_url=state.pending_url,
+                            flag_pattern=state.flag_pattern,
+                            forced_category=state.forced_category,
+                        )
+            except KeyboardInterrupt:
+                display.show_error("Interrupted.")
+                result = None
+            finally:
+                signal.signal(signal.SIGINT, original_handler)
+                state.solving = False
+                state.pending_files = []
+                state.pending_url = None
+                state.forced_category = None
+        except ImportError:
+            display.show_error("Watch mode requires Rich. Falling back to normal mode.")
+            watch_mode = False
+
+    if not watch_mode:
+        spinner = PhaseSpinner(display.console)
+        try:
+            with spinner:
+                callbacks.set_spinner(spinner)
+                if state.resume_session_id:
+                    sid = state.resume_session_id
+                    state.resume_session_id = None
+                    result = orch.resume(
+                        session_id=sid,
+                        flag_pattern=state.flag_pattern,
+                    )
+                else:
+                    result = orch.solve(
+                        description=description,
+                        files=state.pending_files or None,
+                        target_url=state.pending_url,
+                        flag_pattern=state.flag_pattern,
+                        forced_category=state.forced_category,
+                    )
+        except KeyboardInterrupt:
+            display.show_error("Interrupted.")
+            result = None
+        finally:
+            callbacks.set_spinner(None)
+            signal.signal(signal.SIGINT, original_handler)
+            state.solving = False
+            state.pending_files = []
+            state.pending_url = None
+            state.forced_category = None
 
     if result:
         # Show result with mascot for flag/fail, plain for answers
@@ -555,6 +600,7 @@ def chat_loop(
     verbose: bool = False,
     repo_path: str | None = None,
     config_path: str | None = None,
+    watch: bool = False,
 ) -> None:
     """Run the main interactive chat loop.
 
@@ -710,7 +756,7 @@ def chat_loop(
 
             elif action["action"] == "solve":
                 display.console.print()
-                run_solve(action["text"], state, display, callbacks)
+                run_solve(action["text"], state, display, callbacks, watch_mode=watch)
 
     except KeyboardInterrupt:
         display.console.print()

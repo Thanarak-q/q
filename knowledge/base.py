@@ -49,6 +49,14 @@ class KnowledgeBase:
         entry["timestamp"] = datetime.now(tz=timezone.utc).isoformat()
         self.entries.append(entry)
         self._save()
+        # Auto-index into vector store if available
+        try:
+            from knowledge.embeddings import EmbeddingStore
+            store = EmbeddingStore()
+            if store.available():
+                store.index_entry(entry)
+        except Exception:
+            pass
 
     def search(
         self,
@@ -88,6 +96,19 @@ class KnowledgeBase:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [e for _, e in scored[:limit]]
+
+    def search_semantic(self, query: str, category: str | None = None, limit: int = 3) -> list[dict[str, Any]]:
+        """Search using embeddings if available, fall back to keyword search."""
+        try:
+            from knowledge.embeddings import EmbeddingStore
+            store = EmbeddingStore()
+            if store.available():
+                results = store.search_similar(query, category=category, limit=limit)
+                if results:
+                    return results
+        except Exception:
+            pass
+        return self.search(query, category=category, limit=limit)
 
     def get_stats(self) -> dict[str, Any]:
         """Compute summary statistics from the knowledge base.

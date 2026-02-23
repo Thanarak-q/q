@@ -121,6 +121,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 config=config,
                 docker_manager=docker_mgr,
                 workspace=workspace,
+                hooks_path=args.hooks,
             )
 
             result = orch.solve(
@@ -356,6 +357,7 @@ def cmd_resume(args: argparse.Namespace) -> None:
             docker_manager=docker_mgr,
             workspace=Path.cwd(),
             session_manager=mgr,
+            hooks_path=args.hooks,
         )
 
         result = orch.resume(session_id=resume_id)
@@ -654,7 +656,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--watch",
         action="store_true",
         default=False,
-        help="(Default behavior) Open visible browser for web challenges.",
+        help="Live Rich dashboard with 2x2 panel layout",
+    )
+
+    parser.add_argument(
+        "--reindex",
+        action="store_true",
+        help="Reindex knowledge base entries into vector store",
+    )
+
+    parser.add_argument(
+        "--hooks",
+        metavar="FILE",
+        default=None,
+        help="Path to hooks YAML configuration file.",
     )
 
     # --mode kept for backward compat but ignored (always single agent)
@@ -677,6 +692,18 @@ def main() -> None:
     """Main entry point."""
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.reindex:
+        from knowledge.base import KnowledgeBase
+        from knowledge.embeddings import EmbeddingStore
+        kb = KnowledgeBase()
+        store = EmbeddingStore()
+        if not store.available():
+            print("ChromaDB not available. Install: pip install chromadb sentence-transformers")
+            return
+        count = store.reindex_all(kb._entries)
+        print(f"Reindexed {count} entries into vector store")
+        return
 
     # Dispatch to subcommands
     if args.batch:
@@ -703,6 +730,7 @@ def main() -> None:
             verbose=args.verbose,
             repo_path=args.repo,
             config_path=args.config,
+            watch=args.watch,
         )
 
 

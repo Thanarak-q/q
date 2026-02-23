@@ -25,6 +25,10 @@ class ModelConfig:
     api_key: str = os.getenv("OPENAI_API_KEY", "")
     temperature: float = float(os.getenv("CTF_TEMPERATURE", "0.2"))
     max_tokens: int = int(os.getenv("CTF_MAX_TOKENS", "4096"))
+    streaming: bool = field(default_factory=lambda: os.getenv("CTF_STREAMING", "true").lower() != "false")
+    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
+    fallback_model: str = os.getenv("FALLBACK_MODEL", "")
 
 
 @dataclass(frozen=True)
@@ -112,6 +116,14 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "o3": {"input": 10.00, "output": 40.00},
     "o3-mini": {"input": 1.10, "output": 4.40},
     "gpt-4-turbo": {"input": 10.00, "output": 30.00},
+    # Anthropic models
+    "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
+    "claude-sonnet-4-5-20250514": {"input": 3.00, "output": 15.00},
+    "claude-haiku-3-5": {"input": 0.80, "output": 4.00},
+    "claude-opus-4": {"input": 15.00, "output": 75.00},
+    # Google models
+    "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+    "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
 }
 
 

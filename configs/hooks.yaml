@@ -1,0 +1,20 @@
+# Example hooks configuration for ctf-agent.
+# Copy this file and customize for your workflow.
+#
+# Usage: python main.py --hooks configs/hooks.yaml
+#
+hooks:
+  pre_tool_call:
+    - match: "shell"
+      block_if: "rm -rf|mkfs|dd if=|:(){ :|:& };:"
+      message: "Blocked: potentially destructive command"
+
+    - match: "shell"
+      block_if: "curl.*\\|\\s*(bash|sh)|wget.*\\|\\s*(bash|sh)"
+      message: "Blocked: piping download to shell"
+
+  post_solve:
+    - run: "echo '[Q] Solve complete: status={status} flags={flags} cost={cost} steps={steps}' >> /tmp/q-solves.log"
+
+  post_flag:
+    - run: "echo '[Q] Flag found: {flag}' >> /tmp/q-flags.log"

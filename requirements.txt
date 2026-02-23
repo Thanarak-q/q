@@ -10,3 +10,13 @@ playwright>=1.44.0
 pyyaml>=6.0.0
 requests>=2.31.0
 prompt_toolkit>=3.0.0
+# Optional: RAG over CTF writeups
+# chromadb>=0.4.0
+# sentence-transformers>=2.2.0
+# Optional: Multi-provider support
+# anthropic>=0.39.0
+# google-generativeai>=0.8.0
+# Optional: Symbolic verification (angr is ~500MB)
+# angr>=9.2.0
+# z3-solver>=4.12.0
+# ropper>=1.13.0

@@ -12,8 +12,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
-
 from config import AppConfig
 from utils.logger import get_logger
 
@@ -91,7 +89,7 @@ stop: <one sentence describing when the agent should stop>
 def classify_challenge(
     description: str,
     file_info: str,
-    client: OpenAI,
+    client,
     config: AppConfig,
 ) -> Category:
     """Classify a CTF challenge into a category.
@@ -99,7 +97,7 @@ def classify_challenge(
     Args:
         description: The challenge description text.
         file_info: Information about associated files (types, names).
-        client: OpenAI API client.
+        client: LLM provider (ProviderRouter or compatible).
         config: Application configuration.
 
     Returns:
@@ -116,16 +114,16 @@ def classify_challenge(
     model = select_model_for_classification(config)
 
     try:
-        response = client.chat.completions.create(
+        result = client.chat(
             model=model,
-            temperature=0.0,
-            max_tokens=10,
             messages=[
                 {"role": "system", "content": CLASSIFICATION_PROMPT},
                 {"role": "user", "content": user_content},
             ],
+            temperature=0.0,
+            max_tokens=10,
         )
-        raw = response.choices[0].message.content.strip().lower()
+        raw = result["message"]["content"].strip().lower()
         log.info(f"Classified challenge as: {raw}")
 
         # Map to Category enum
@@ -178,14 +176,14 @@ def get_base_skills() -> str:
 
 def classify_intent(
     description: str,
-    client: OpenAI,
+    client,
     config: AppConfig,
 ) -> IntentResult:
     """Classify the user's intent for this task.
 
     Args:
         description: The user's input / challenge description.
-        client: OpenAI API client.
+        client: LLM provider (ProviderRouter or compatible).
         config: Application configuration.
 
     Returns:
@@ -197,16 +195,16 @@ def classify_intent(
     model = select_model_for_classification(config)
 
     try:
-        response = client.chat.completions.create(
+        result = client.chat(
             model=model,
-            temperature=0.0,
-            max_tokens=150,
             messages=[
                 {"role": "system", "content": INTENT_PROMPT},
                 {"role": "user", "content": description},
             ],
+            temperature=0.0,
+            max_tokens=150,
         )
-        raw = response.choices[0].message.content.strip()
+        raw = result["message"]["content"].strip()
         log.info(f"Intent classification raw: {raw}")
 
         # Parse the 3-line response

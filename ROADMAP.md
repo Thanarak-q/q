@@ -1,4 +1,4 @@
-# Q v0.6.0 Roadmap — "The Intelligence Update"
+# Q Roadmap
 
 > Last updated: 2026-02-23
 
@@ -396,16 +396,16 @@ Ship as **v0.6.0 — "The Intelligence Update"** (~2 weeks):
 
 ### v0.7.0 — "The Memory Update" (after v0.6.0):
 
-- [ ] RAG over CTF Writeups
-- [ ] Procedural Memory
-- [ ] Streaming Output
-- [ ] Watch Mode
+- [x] RAG over CTF Writeups
+- [x] Procedural Memory
+- [x] Streaming Output
+- [x] Watch Mode
 
 ### v0.8.0 — "The Platform Update" (after v0.7.0):
 
-- [ ] Multi-Provider Support
-- [ ] Hooks System
-- [ ] Symbolic Verification Layer
+- [x] Multi-Provider Support
+- [x] Hooks System
+- [x] Symbolic Verification Layer
 
 ---
 

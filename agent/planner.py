@@ -9,8 +9,6 @@ from __future__ import annotations
 from enum import Enum, auto
 from typing import Any
 
-from openai import OpenAI
-
 from agent.classifier import Category
 from config import AppConfig
 from utils.logger import get_logger
@@ -291,6 +289,17 @@ class PivotManager:
             return f"{targeted_advice}\n\n{base_prompt}"
         return base_prompt
 
+    def get_reasons(self) -> list[str]:
+        """Return collected pivot reasons for procedural memory recording."""
+        reasons = []
+        if self._pivot_count > 0:
+            reasons.append(f"Pivoted {self._pivot_count} times (reached level {self._current_level.name})")
+        if self._model_escalated:
+            reasons.append("Required model escalation")
+        if self._asked_user:
+            reasons.append("Required user assistance")
+        return reasons
+
 
 def select_model_for_task(
     category: Category,
@@ -334,7 +343,7 @@ def create_plan(
     description: str,
     category: Category,
     file_info: str,
-    client: OpenAI,
+    client,
     config: AppConfig,
 ) -> str:
     """Generate an initial attack plan for the challenge.
@@ -343,7 +352,7 @@ def create_plan(
         description: Challenge description.
         category: Classified category.
         file_info: File type/name information.
-        client: OpenAI API client.
+        client: LLM provider (ProviderRouter or compatible).
         config: Application configuration.
 
     Returns:
@@ -360,16 +369,16 @@ def create_plan(
     model = config.model.fast_model
 
     try:
-        response = client.chat.completions.create(
+        result = client.chat(
             model=model,
-            temperature=0.3,
-            max_tokens=1024,
             messages=[
                 {"role": "system", "content": PLANNER_PROMPT},
                 {"role": "user", "content": user_content},
             ],
+            temperature=0.3,
+            max_tokens=1024,
         )
-        plan = response.choices[0].message.content.strip()
+        plan = result["message"]["content"].strip()
         log.info(f"Generated plan for {category.value} challenge (model={model})")
         return plan
 

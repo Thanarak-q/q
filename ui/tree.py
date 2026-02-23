@@ -148,6 +148,20 @@ class TaskTree:
         self._nodes.clear()
         self._root_title = ""
 
+    def render_to_string(self) -> str:
+        """Render the task tree to a string instead of stdout."""
+        from io import StringIO
+        buf = StringIO()
+        if self._root_title:
+            buf.write(f"● {self._root_title}\n")
+        for node in self._nodes:
+            icon = self._state_icon(node.state) if self._use_color else STATE_ICONS.get(node.state, "○")
+            line = f"├── {icon} {node.title}"
+            if node.detail:
+                line += f" — {node.detail}"
+            buf.write(line + "\n")
+        return buf.getvalue()
+
     # -- rendering -------------------------------------------------
 
     def _c(self, color_name: str, text: str) -> str:
