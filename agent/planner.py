@@ -42,6 +42,101 @@ class PivotLevel(Enum):
     ASK_USER = auto()          # give up autonomous solving, ask for hint
 
 
+class FailureType(Enum):
+    """Types of failure the agent can encounter."""
+
+    TOOL_ERROR = "tool_error"
+    NO_OUTPUT = "no_output"
+    WRONG_CATEGORY = "wrong_category"
+    PARTIAL_PROGRESS = "partial_progress"
+    REPEATED_ACTION = "repeated_action"
+
+
+FAILURE_PIVOT_PROMPTS: dict[FailureType, str] = {
+    FailureType.TOOL_ERROR: (
+        "The last command failed with an error. Analyze the error message "
+        "and try a different command or fix the syntax."
+    ),
+    FailureType.NO_OUTPUT: (
+        "The last command produced no useful output. Try a broader search, "
+        "different file, or different approach entirely."
+    ),
+    FailureType.REPEATED_ACTION: (
+        "You're repeating similar actions. STOP and try a completely "
+        "different technique or tool."
+    ),
+    FailureType.PARTIAL_PROGRESS: (
+        "You found some data but haven't reached the flag. Focus on what "
+        "you found and dig deeper into it."
+    ),
+    FailureType.WRONG_CATEGORY: (
+        "Multiple approaches have failed. The challenge category might be "
+        "wrong. Reconsider what type of challenge this really is."
+    ),
+}
+
+
+def classify_failure(
+    recent_outputs: list[str],
+    recent_tool_calls: list[dict[str, Any]],
+) -> FailureType:
+    """Classify the type of failure based on recent outputs and tool calls.
+
+    Args:
+        recent_outputs: Last few tool outputs.
+        recent_tool_calls: Last few tool call dicts with 'name' and 'args'.
+
+    Returns:
+        The classified FailureType.
+    """
+    error_keywords = (
+        "error", "traceback", "exception", "failed", "permission denied",
+    )
+
+    # TOOL_ERROR: any recent output contains error indicators
+    if recent_outputs:
+        last_output = recent_outputs[-1].lower()
+        if any(kw in last_output for kw in error_keywords):
+            return FailureType.TOOL_ERROR
+
+    # NO_OUTPUT: last output is empty or very short
+    if recent_outputs:
+        last_output = recent_outputs[-1].strip()
+        if len(last_output) < 10:
+            return FailureType.NO_OUTPUT
+
+    # REPEATED_ACTION: last 2 tool calls have same name and similar args
+    if len(recent_tool_calls) >= 2:
+        tc1 = recent_tool_calls[-1]
+        tc2 = recent_tool_calls[-2]
+        if tc1.get("name") == tc2.get("name"):
+            args1 = str(tc1.get("args", ""))
+            args2 = str(tc2.get("args", ""))
+            # Simple similarity: same tool + args share > 60% characters
+            if args1 and args2:
+                common = sum(1 for a, b in zip(args1, args2) if a == b)
+                max_len = max(len(args1), len(args2))
+                if max_len > 0 and common / max_len > 0.6:
+                    return FailureType.REPEATED_ACTION
+
+    # WRONG_CATEGORY: 3+ different tool names tried with no progress
+    if len(recent_tool_calls) >= 3:
+        unique_tools = {tc.get("name") for tc in recent_tool_calls[-4:]}
+        if len(unique_tools) >= 3:
+            # Check if any output has flag-like patterns
+            has_flag_hint = False
+            for out in recent_outputs[-3:]:
+                out_lower = out.lower()
+                if any(kw in out_lower for kw in ("flag{", "ctf{", "flag:")):
+                    has_flag_hint = True
+                    break
+            if not has_flag_hint:
+                return FailureType.WRONG_CATEGORY
+
+    # PARTIAL_PROGRESS: default when there's data but no flag
+    return FailureType.PARTIAL_PROGRESS
+
+
 class PivotManager:
     """Manages strategy pivoting when the agent stalls.
 
@@ -156,6 +251,45 @@ class PivotManager:
             ),
         }
         return mapping.get(level, STALL_PIVOT_PROMPT)
+
+    def get_targeted_pivot(
+        self,
+        level: PivotLevel,
+        recent_outputs: list[str],
+        recent_tool_calls: list[dict[str, Any]],
+    ) -> str:
+        """Get a failure-type-aware pivot prompt.
+
+        First classifies the failure type from recent context, then
+        returns targeted advice combined with the level-appropriate
+        escalation prompt.
+
+        Args:
+            level: The pivot escalation level.
+            recent_outputs: Recent tool outputs for failure classification.
+            recent_tool_calls: Recent tool call dicts.
+
+        Returns:
+            Targeted pivot prompt string.
+        """
+        # Get the base escalation prompt for this level
+        base_prompt = self.get_pivot_prompt(level)
+
+        # Classify the failure and get targeted advice
+        if not recent_outputs and not recent_tool_calls:
+            return base_prompt
+
+        failure_type = classify_failure(recent_outputs, recent_tool_calls)
+        targeted_advice = FAILURE_PIVOT_PROMPTS.get(failure_type, "")
+
+        self._log.info(
+            f"Failure classified as {failure_type.value} "
+            f"(pivot level: {level.name})"
+        )
+
+        if targeted_advice:
+            return f"{targeted_advice}\n\n{base_prompt}"
+        return base_prompt
 
 
 def select_model_for_task(

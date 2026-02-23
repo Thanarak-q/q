@@ -386,13 +386,13 @@ Dependencies: angr, z3-solver, ropper
 
 Ship as **v0.6.0 — "The Intelligence Update"** (~2 weeks):
 
-- [ ] Checkpoint & Rewind (P0)
-- [ ] Anti-Soliloquy Guard (P0)
-- [ ] Interactive Agent Tools — gdb + pwntools (P0)
-- [ ] Context-Aware Spinner (P1)
-- [ ] Persistent History (P1)
-- [ ] Reflection Loop every 3 iterations (P1)
-- [ ] Hypothesis-Driven Pivoting (P1)
+- [x] Checkpoint & Rewind (P0)
+- [x] Anti-Soliloquy Guard (P0)
+- [x] Interactive Agent Tools — gdb + pwntools + netcat (P0)
+- [x] Context-Aware Spinner (P1)
+- [x] Persistent History (P1)
+- [x] Reflection Loop every 3 iterations (P1)
+- [x] Hypothesis-Driven Pivoting (P1)
 
 ### v0.7.0 — "The Memory Update" (after v0.6.0):
 

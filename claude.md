@@ -6,7 +6,7 @@ Q เป็น AI agent ที่ solve CTF (Capture The Flag) challenges อั
 
 สร้างโดย q (CS student @ Chiang Mai University, AI Engineer)
 
-## สถานะปัจจุบัน (v0.5.0)
+## สถานะปัจจุบัน (v0.6.0 — "The Intelligence Update")
 
 ### ทำงานได้แล้ว
 - Single agent + skill-based prompts (3 steps, $0.04/challenge)
@@ -26,6 +26,15 @@ Q เป็น AI agent ที่ solve CTF (Capture The Flag) challenges อั
 - Input filter (greeting/exit/typo detection)
 - Batch mode, session replay, writeup export
 - Docker sandbox support
+
+### v0.6.0 New Features
+- **Checkpoint & Rewind** — `/rewind [n|list]` to roll back agent state and try different approach
+- **Anti-Soliloquy Guard** — detects when agent claims to see output without running a command, injects warning
+- **Reflection Loop** — auto self-critique every 3 iterations, triggers early pivot on low confidence
+- **Hypothesis-Driven Pivoting** — 5 failure types (TOOL_ERROR, NO_OUTPUT, WRONG_CATEGORY, PARTIAL_PROGRESS, REPEATED_ACTION) with targeted pivot prompts instead of generic escalation
+- **Interactive Agent Tools (IATs)** — persistent gdb, pwntools, and netcat sessions across iterations (inspired by EnIGMA/NYU)
+- **Context-Aware Spinner** — phase-specific status ("Debugging binary...", "Running recon...", etc.) instead of generic "Thinking..."
+- **Persistent Input History** — Ctrl+R search across sessions via `~/.q/history`
 
 ### Known Bugs ที่ต้องแก้
 
@@ -64,7 +73,27 @@ User Input → Input Filter → Classifier (category + intent)
                           Reads skill .md file
                           (skills/forensics.md, web.md, etc.)
                                 ↓
-                          Tool execution (shell, python, file, network, browser)
+                    ┌─── ReAct Loop (per iteration) ───┐
+                    │                                   │
+                    │  Think → Act → Observe → Reflect  │
+                    │         ↓                         │
+                    │  Anti-Soliloquy Guard              │
+                    │  (blocks hallucinated observations) │
+                    │         ↓                         │
+                    │  Checkpoint (saved before each     │
+                    │  tool call, /rewind to restore)    │
+                    │         ↓                         │
+                    │  Tool execution:                   │
+                    │  shell, python, file, network,     │
+                    │  browser, debugger, pwntools,      │
+                    │  netcat (IATs — persistent)        │
+                    │         ↓                         │
+                    │  Every 3 iters: Reflection Check   │
+                    │  (confidence LOW → early pivot)    │
+                    │         ↓                         │
+                    │  Hypothesis-Driven Pivot if stuck  │
+                    │  (5 failure types → targeted fix)  │
+                    └───────────────────────────────────┘
                                 ↓
                           Evidence Tracker (anti-hallucination)
                                 ↓
@@ -81,7 +110,7 @@ ctf-agent/
 │   ├── orchestrator.py      # Main agent loop — CORE FILE
 │   ├── parallel.py          # Parallel approach solving
 │   ├── classifier.py        # Category + intent classification
-│   ├── planner.py           # Attack planning + pivot system
+│   ├── planner.py           # Attack planning + hypothesis-driven pivoting (FailureType)
 │   └── context_manager.py   # Context window management
 ├── skills/                  # Skill files — category cheat sheets
 │   ├── SKILL.md             # Core rules + thinking protocol
@@ -99,6 +128,9 @@ ctf-agent/
 │   ├── file_manager.py      # File read/write/list
 │   ├── network.py           # Network tools
 │   ├── browser.py           # Playwright browser automation
+│   ├── debugger.py          # GDB wrapper via pexpect (IAT) — v0.6.0
+│   ├── pwntools_session.py  # Persistent pwntools connection (IAT) — v0.6.0
+│   ├── netcat_session.py    # Raw TCP/UDP sessions (IAT) — v0.6.0
 │   ├── recon.py             # nmap, whatweb, gobuster, nikto
 │   ├── code_analyzer.py     # White-box source code analysis
 │   ├── error_analyzer.py    # Error detection + adaptation
@@ -142,14 +174,14 @@ ctf-agent/
 ├── report/
 │   └── generator.py         # Markdown report generator
 ├── ui/
-│   ├── chat.py              # Chat loop + callbacks
+│   ├── chat.py              # Chat loop + callbacks + PhaseSpinner integration
 │   ├── display.py           # Output formatting, VERSION
-│   ├── commands.py          # Slash command handlers
-│   ├── input_handler.py     # prompt_toolkit input
+│   ├── commands.py          # Slash command handlers (includes /rewind)
+│   ├── input_handler.py     # prompt_toolkit input + persistent history (~/.q/history)
 │   ├── input_filter.py      # Greeting/exit/typo filter
 │   ├── tree.py              # TaskTree renderer (ANSI)
 │   ├── mascot.py            # Capybara ASCII art
-│   └── spinner.py           # Loading spinner
+│   └── spinner.py           # PhaseSpinner with 15 context-aware verbs
 ├── logs/                    # Session logs
 ├── reports/                 # Generated solve reports
 ├── sessions/                # Saved sessions
@@ -202,21 +234,32 @@ Pricing tracked for: gpt-4o, gpt-4o-mini, o3, o3-mini, gpt-4-turbo
 
 ## Roadmap / TODO
 
-### Priority: Bug Fixes
+See `ROADMAP.md` for detailed plans.
+
+### Done in v0.6.0
+1. ~~Checkpoint & Rewind~~ (/rewind command)
+2. ~~Anti-Soliloquy Guard~~ (blocks hallucinated observations)
+3. ~~Interactive Agent Tools~~ (debugger, pwntools, netcat)
+4. ~~Context-Aware Spinner~~ (15 phase verbs)
+5. ~~Persistent Input History~~ (~/.q/history)
+6. ~~Reflection Loop~~ (self-critique every 3 iterations)
+7. ~~Hypothesis-Driven Pivoting~~ (5 failure types)
+
+### Remaining Bug Fixes
 1. ~~tool_calls response ไม่ครบ~~ (ตรวจสอบว่าแก้แล้ว)
 2. Ctrl+C ไม่หยุดจริง + agent spawn ซ้อน
 3. Output ซ้ำหลายบรรทัดหลัง Ctrl+C
 
-### Priority: Intelligence Upgrades
-1. Self-reflection (think before act) — แก้ SKILL.md
-2. Error recovery & adaptation — tools/error_analyzer.py
-3. Context summarization — tools/output_summarizer.py
-4. Chain-of-thought via <think> tags
+### v0.7.0 — "The Memory Update" (planned)
+1. RAG over CTF writeups (Chroma DB + sentence-transformers)
+2. Procedural memory (learned technique chains)
+3. Streaming output (token-by-token display)
+4. Watch mode (Rich Live multi-panel display)
 
-### Priority: Features
-1. Browser vision mode — screenshot + GPT vision สำหรับ flag ในรูป
-2. Watch mode — เปิด browser ให้ดู Q ทำงาน (--watch flag)
-3. Multi-provider support — เพิ่ม Claude API, Gemini
+### v0.8.0 — "The Platform Update" (planned)
+1. Multi-provider support (Claude, Gemini, OpenAI)
+2. Hooks system (pre/post tool call, auto-submit flags)
+3. Symbolic verification layer (angr, z3)
 
 ### Priority: GitHub Release
 1. Professional README + GIF demo
@@ -236,6 +279,8 @@ Pricing tracked for: gpt-4o, gpt-4o-mini, o3, o3-mini, gpt-4-turbo
 /report        View report
 /audit         Audit log
 /repo <path>   Set source code for white-box
+/rewind [n]    Rewind agent state by n steps (v0.6.0)
+/rewind list   Show all checkpoints (v0.6.0)
 /verbose       Toggle verbose
 /cost          Session cost
 /exit          Quit
@@ -289,7 +334,8 @@ python3 main.py --tools                     # List available tools
 - Python 3.11+
 - OpenAI API (gpt-4o / gpt-4o-mini / o3)
 - Playwright (browser automation)
-- prompt_toolkit (CLI input)
+- pexpect (IAT: persistent gdb/pwntools sessions)
+- prompt_toolkit (CLI input + persistent history)
 - PyYAML (config)
 - Rich (terminal output)
 

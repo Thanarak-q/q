@@ -9,6 +9,7 @@ Architecture: Classifier -> Single Agent (with skill cheat sheet) -> Auto Report
 
 from __future__ import annotations
 
+import copy
 import json
 import threading
 import time
@@ -29,6 +30,7 @@ from agent.classifier import (
 )
 from agent.context_manager import ContextManager
 from agent.planner import (
+    FailureType,
     PivotLevel,
     PivotManager,
     create_plan,
@@ -267,6 +269,20 @@ class Orchestrator:
         self._start_time: float = 0.0
         self._audit: AuditLogger | None = None
 
+        # Checkpoint / rewind support
+        self._checkpoints: list[dict[str, Any]] = []
+        self._max_checkpoints = 20
+
+        # Anti-soliloquy guard: track when a tool was last called
+        self._last_tool_iteration: int = 0
+
+        # Reflection loop: track consecutive low-confidence reflections
+        self._consecutive_low_confidence: int = 0
+
+        # Recent tool calls for hypothesis-driven pivoting
+        self._recent_tool_calls: list[dict[str, Any]] = []
+        self._recent_outputs: list[str] = []
+
         # Evidence tracking (anti-hallucination)
         self._evidence = EvidenceTracker()
 
@@ -338,6 +354,62 @@ class Orchestrator:
         """
         self._cancelled = True
         self._cancel_event.set()
+
+    # ------------------------------------------------------------------
+    # Checkpoint / rewind
+    # ------------------------------------------------------------------
+
+    def _save_checkpoint(self, summary: str) -> None:
+        """Snapshot agent state before a tool call."""
+        checkpoint: dict[str, Any] = {
+            "step": self._iteration,
+            "summary": summary,
+            "timestamp": time.time(),
+            "messages": copy.deepcopy(self._context._messages),  # noqa: SLF001
+            "scratchpad": copy.deepcopy(self._context._scratchpad),  # noqa: SLF001
+            "iteration": self._iteration,
+            "evidence": copy.deepcopy(self._evidence.evidence),
+            "cost_snapshot": {
+                "total_cost": self._cost.total_cost,
+                "total_tokens": self._cost.total_tokens,
+            },
+        }
+        self._checkpoints.append(checkpoint)
+        if len(self._checkpoints) > self._max_checkpoints:
+            self._checkpoints = self._checkpoints[-self._max_checkpoints:]
+
+    def rewind(self, n: int = 1) -> str:
+        """Rewind agent state by n checkpoints."""
+        if not self._checkpoints:
+            return "No checkpoints available to rewind."
+        n = min(n, len(self._checkpoints))
+        for _ in range(n):
+            self._checkpoints.pop()
+        if self._checkpoints:
+            cp = self._checkpoints[-1]
+            self._context._messages = copy.deepcopy(cp["messages"])  # noqa: SLF001
+            self._context._scratchpad = copy.deepcopy(cp["scratchpad"])  # noqa: SLF001
+            self._iteration = cp["iteration"]
+            self._evidence.evidence = copy.deepcopy(cp["evidence"])
+            return (
+                f"Rewound {n} step(s). Restored to step {cp['step']}: "
+                f"{cp['summary']}"
+            )
+        return (
+            f"Rewound {n} step(s). All checkpoints consumed — "
+            f"state is at earliest available point."
+        )
+
+    def list_checkpoints(self) -> list[dict[str, Any]]:
+        """Return checkpoint metadata for display."""
+        return [
+            {
+                "step": cp["step"],
+                "summary": cp["summary"],
+                "timestamp": cp["timestamp"],
+            }
+            for cp in self._checkpoints
+        ]
 
     # ------------------------------------------------------------------
     # Public API
@@ -759,6 +831,10 @@ class Orchestrator:
             if pivot_level != PivotLevel.NONE:
                 self._handle_pivot(pivot_level)
 
+            # --- Reflection loop (every 3 iterations) ---
+            if self._iteration > 1 and self._iteration % 3 == 0:
+                self._inject_reflection()
+
             # --- Early stop nudge for answer_question intent ---
             if (
                 self._intent
@@ -817,12 +893,21 @@ class Orchestrator:
                     cost_usd=llm_cost,
                 ))
 
+            # --- Anti-soliloquy guard ---
+            tool_calls = response_message.get("tool_calls")
+            if text_content and not tool_calls:
+                if self._check_soliloquy(text_content, self._iteration):
+                    self._context.add_user_message(
+                        "SYSTEM WARNING: You described output without running "
+                        "any command. You must call a tool to observe real "
+                        "results. Do not hallucinate observations."
+                    )
+
             # --- Process tool calls FIRST ---
             # IMPORTANT: OpenAI API requires a tool response for EVERY
             # tool_call_id in the assistant message.  This MUST happen
             # before any `continue` or `return` that could skip it,
             # otherwise the next _call_llm sees broken messages → 400.
-            tool_calls = response_message.get("tool_calls")
             answer_tc: dict[str, Any] | None = None
             all_found_flags: list[str] = []
 
@@ -843,6 +928,12 @@ class Orchestrator:
                         # so every tool_call_id gets a response
                         answer_tc = tc
                         continue
+
+                    # Save checkpoint before tool execution
+                    func_info = tc.get('function', {})
+                    tool_name = func_info.get('name', '?')
+                    args_preview = func_info.get('arguments', '')[:60]
+                    self._save_checkpoint(f'{tool_name}: {args_preview}')
 
                     flags = self._execute_tool_call(tc)
                     if flags:
@@ -1079,6 +1170,12 @@ class Orchestrator:
 
         self._cb.on_tool_call(name, args)
 
+        # Track tool usage for anti-soliloquy guard and hypothesis pivoting
+        self._last_tool_iteration = self._iteration
+        self._recent_tool_calls.append({"name": name, "args": args})
+        if len(self._recent_tool_calls) > 5:
+            self._recent_tool_calls = self._recent_tool_calls[-5:]
+
         # Audit: tool call
         if self._audit:
             self._audit.log_tool_call(
@@ -1088,6 +1185,11 @@ class Orchestrator:
         result = self._registry.execute(name, args)
 
         output = result.output if result.success else f"[ERROR] {result.error}"
+
+        # Track recent outputs for hypothesis-driven pivoting
+        self._recent_outputs.append(output)
+        if len(self._recent_outputs) > 5:
+            self._recent_outputs = self._recent_outputs[-5:]
 
         # Record evidence for anti-hallucination tracking (raw output)
         command_str = json.dumps(args, ensure_ascii=False)[:300]
@@ -1299,7 +1401,9 @@ class Orchestrator:
         if self._audit:
             self._audit.log_pivot(level=level.name, pivot_count=self._pivot.pivot_count)
 
-        prompt = self._pivot.get_pivot_prompt(level)
+        prompt = self._pivot.get_targeted_pivot(
+            level, self._recent_outputs, self._recent_tool_calls,
+        )
         self._context.add_user_message(prompt)
 
         # Session step
@@ -1365,6 +1469,123 @@ class Orchestrator:
             intent=self._intent.intent.value if self._intent else "find_flag",
             summary=summary,
         )
+
+    # ------------------------------------------------------------------
+    # Anti-soliloquy guard
+    # ------------------------------------------------------------------
+
+    _SOLILOQUY_PHRASES = (
+        "i can see",
+        "the output shows",
+        "the result is",
+        "looking at the output",
+        "from the output",
+        "the response contains",
+        "we can observe",
+    )
+
+    def _check_soliloquy(self, text: str, current_iteration: int) -> bool:
+        """Check if the agent is hallucinating observations without tools.
+
+        Returns True if the text contains observation phrases, no tool
+        was called in this response, and no tool was called recently.
+        """
+        text_lower = text.lower()
+        has_observation = any(
+            phrase in text_lower for phrase in self._SOLILOQUY_PHRASES
+        )
+        if not has_observation:
+            return False
+        # No tool was called recently (not in this or previous iteration)
+        return self._last_tool_iteration < current_iteration - 1
+
+    # ------------------------------------------------------------------
+    # Reflection loop
+    # ------------------------------------------------------------------
+
+    _REFLECTION_PROMPT = (
+        "=== REFLECTION CHECK (auto-injected, iteration {iteration}) ===\n"
+        "Briefly review your last 3 steps:\n"
+        "1. What did you learn from the outputs?\n"
+        "2. Are you making progress toward the goal, or going in circles?\n"
+        "3. Your confidence level: LOW / MEDIUM / HIGH\n"
+        "4. If LOW, what specific different approach would you try?"
+    )
+
+    def _inject_reflection(self) -> None:
+        """Inject a reflection prompt and process the response.
+
+        If the agent reports LOW confidence twice in a row, triggers
+        an early targeted pivot.
+        """
+        self._context.add_user_message(
+            self._REFLECTION_PROMPT.format(iteration=self._iteration)
+        )
+
+        # Get LLM response to the reflection prompt
+        reflection_response = self._call_llm()
+        if reflection_response is None:
+            return
+
+        self._context.add_assistant_message(reflection_response)
+
+        reflection_text = reflection_response.get("content", "") or ""
+        if reflection_text:
+            self._cb.on_thinking(reflection_text)
+
+            # Store reflection in scratchpad
+            self._context.add_scratchpad_entry(
+                f"Reflection (iter {self._iteration}): "
+                f"{reflection_text[:300]}"
+            )
+
+        # Parse confidence level
+        confidence = self._parse_confidence(reflection_text)
+        if confidence == "low":
+            self._consecutive_low_confidence += 1
+        else:
+            self._consecutive_low_confidence = 0
+
+        # Two consecutive LOW → early targeted pivot
+        if self._consecutive_low_confidence >= 2:
+            self._consecutive_low_confidence = 0
+            targeted_prompt = self._pivot.get_targeted_pivot(
+                PivotLevel.BASIC_PIVOT,
+                self._recent_outputs,
+                self._recent_tool_calls,
+            )
+            self._context.add_user_message(
+                f"LOW CONFIDENCE detected twice. Forcing strategy change.\n\n"
+                f"{targeted_prompt}"
+            )
+            self._cb.on_pivot("REFLECTION_PIVOT", self._pivot.pivot_count)
+
+    @staticmethod
+    def _parse_confidence(text: str) -> str:
+        """Extract confidence level from reflection text.
+
+        Returns 'low', 'medium', 'high', or 'unknown'.
+        """
+        text_upper = text.upper()
+        # Look for explicit confidence markers
+        if "CONFIDENCE" in text_upper:
+            # Check text after the word CONFIDENCE
+            idx = text_upper.index("CONFIDENCE")
+            region = text_upper[idx:idx + 50]
+            if "LOW" in region:
+                return "low"
+            if "HIGH" in region:
+                return "high"
+            if "MEDIUM" in region:
+                return "medium"
+        # Fallback: scan the whole text for standalone markers
+        if "LOW" in text_upper:
+            return "low"
+        if "HIGH" in text_upper:
+            return "high"
+        if "MEDIUM" in text_upper:
+            return "medium"
+        return "unknown"
 
     # ------------------------------------------------------------------
     # Report generation

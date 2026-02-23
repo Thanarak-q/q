@@ -21,6 +21,7 @@ COMMAND_HELP: dict[str, str] = {
     "/resume [id|latest]": "Resume a paused session",
     "/report [list|id]": "Show latest report, list all, or show by session ID",
     "/audit [id]": "Show audit log (current or by session ID)",
+    "/rewind [n|list]": "Rewind agent state by n steps, or list checkpoints",
     # Intelligence
     "/knowledge [search|clear|export]": "Knowledge base stats or search",
     "/stats": "Performance dashboard",
@@ -96,6 +97,7 @@ def handle_command(
         "/stats": _cmd_stats,
         "/benchmark": _cmd_benchmark,
         "/workflow": _cmd_workflow,
+        "/rewind": _cmd_rewind,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -809,6 +811,50 @@ def _cmd_workflow(arg: str, state: ChatState, display: Display) -> bool:
         )
 
     display.console.print(table)
+    return False
+
+
+def _cmd_rewind(arg: str, state: ChatState, display: Display) -> bool:
+    from datetime import datetime, timezone
+
+    orch = getattr(state, "_rewind_orchestrator", None)
+    if orch is None:
+        display.show_error("No active solve session. Start solving first.")
+        return False
+
+    if arg.strip().lower() == "list":
+        checkpoints = orch.list_checkpoints()
+        if not checkpoints:
+            display.show_info("No checkpoints available.")
+            return False
+        from rich.table import Table
+
+        table = Table(title="Checkpoints")
+        table.add_column("#", justify="right", style="dim")
+        table.add_column("Step", justify="right")
+        table.add_column("Action", max_width=60)
+        table.add_column("Time")
+        for i, cp in enumerate(checkpoints, 1):
+            ts = datetime.fromtimestamp(cp["timestamp"], tz=timezone.utc)
+            table.add_row(
+                str(i),
+                str(cp["step"]),
+                cp["summary"][:60],
+                ts.strftime("%H:%M:%S"),
+            )
+        display.console.print(table)
+        return False
+
+    # Parse rewind count
+    n = 1
+    if arg.strip().isdigit():
+        n = int(arg.strip())
+
+    result_msg = orch.rewind(n)
+    display.show_info(result_msg)
+    display.console.print(
+        "  [dim]Type a new hint or instruction before the agent continues.[/dim]\n"
+    )
     return False
 
 

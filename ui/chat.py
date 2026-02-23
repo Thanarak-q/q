@@ -22,6 +22,7 @@ from ui.commands import handle_command
 from ui.display import Display
 from ui.input_filter import classify_input
 from ui.input_handler import QInput
+from ui.spinner import PhaseSpinner
 from ui.tree import (
     NodeState,
     TaskTree,
@@ -71,6 +72,9 @@ class ChatState:
     # YAML config path
     yaml_config_path: str | None = None
 
+    # Orchestrator reference for /rewind command
+    _rewind_orchestrator: Any = None
+
 
 # ------------------------------------------------------------------
 # Chat UI callback implementation — tree-structured output
@@ -94,6 +98,7 @@ class ChatCallbacks(AgentCallbacks):
         self._found_answer: str | None = None
         self._answer_confidence: str = ""
         self._root_set: bool = False
+        self._spinner: PhaseSpinner | None = None
 
     # -- Lifecycle -------------------------------------------------
 
@@ -106,9 +111,15 @@ class ChatCallbacks(AgentCallbacks):
         self._answer_confidence = ""
         self._root_set = False
 
+    def set_spinner(self, spinner: PhaseSpinner | None) -> None:
+        """Attach a PhaseSpinner so callbacks can update it."""
+        self._spinner = spinner
+
     # -- Phase / structure -----------------------------------------
 
     def on_phase(self, phase: str, detail: str) -> None:
+        if self._spinner:
+            self._spinner.set_phase(phase.lower())
         if phase == "Category":
             self._tree.set_root(f"Analyzing challenge ({detail})")
             self._root_set = True
@@ -143,6 +154,8 @@ class ChatCallbacks(AgentCallbacks):
     # -- Tool calls ------------------------------------------------
 
     def on_tool_call(self, tool_name: str, args: dict) -> None:
+        if self._spinner:
+            self._spinner.set_phase(tool_name)
         summary = summarize_tool_call(tool_name, args)
         self._current_tool_node = self._tree.add_node(
             summary, state=NodeState.RUNNING
@@ -154,6 +167,8 @@ class ChatCallbacks(AgentCallbacks):
                 self._display.console.print(f"│     [dim]{line}[/dim]")
 
     def on_tool_result(self, tool_name: str, output: str, success: bool) -> None:
+        if self._spinner:
+            self._spinner.reset()
         detail = summarize_tool_result(output)
 
         if self._current_tool_node is not None:
@@ -428,6 +443,7 @@ def run_solve(
         repo_path=state.repo_path,
         yaml_config_path=state.yaml_config_path,
     )
+    state._rewind_orchestrator = orch
 
     if state.solving:
         display.show_error("Already solving. Wait or Ctrl+C to stop.")
@@ -457,26 +473,30 @@ def run_solve(
 
     signal.signal(signal.SIGINT, cancel_handler)
 
+    spinner = PhaseSpinner(display.console)
     try:
-        if state.resume_session_id:
-            sid = state.resume_session_id
-            state.resume_session_id = None
-            result = orch.resume(
-                session_id=sid,
-                flag_pattern=state.flag_pattern,
-            )
-        else:
-            result = orch.solve(
-                description=description,
-                files=state.pending_files or None,
-                target_url=state.pending_url,
-                flag_pattern=state.flag_pattern,
-                forced_category=state.forced_category,
-            )
+        with spinner:
+            callbacks.set_spinner(spinner)
+            if state.resume_session_id:
+                sid = state.resume_session_id
+                state.resume_session_id = None
+                result = orch.resume(
+                    session_id=sid,
+                    flag_pattern=state.flag_pattern,
+                )
+            else:
+                result = orch.solve(
+                    description=description,
+                    files=state.pending_files or None,
+                    target_url=state.pending_url,
+                    flag_pattern=state.flag_pattern,
+                    forced_category=state.forced_category,
+                )
     except KeyboardInterrupt:
         display.show_error("Interrupted.")
         result = None
     finally:
+        callbacks.set_spinner(None)
         signal.signal(signal.SIGINT, original_handler)
         state.solving = False
         state.pending_files = []

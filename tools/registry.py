@@ -129,6 +129,14 @@ class ToolRegistry:
         from tools.browser import BrowserTool
         self.register(BrowserTool(vision_config=vision_config))
 
+        # Interactive Agent Tools (IATs)
+        from tools.debugger import DebuggerTool
+        from tools.netcat_session import NetcatSessionTool
+        from tools.pwntools_session import PwntoolsSessionTool
+        self.register(DebuggerTool())
+        self.register(PwntoolsSessionTool())
+        self.register(NetcatSessionTool())
+
     @classmethod
     def from_subset(
         cls,

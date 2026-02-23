@@ -121,7 +121,7 @@ class QInput:
     # Sentinel value returned on Ctrl+C
     CTRL_C = "__CTRL_C__"
 
-    def __init__(self, history_file: str = "~/.q_history") -> None:
+    def __init__(self, history_file: str = "~/.q/history") -> None:
         history_path = os.path.expanduser(history_file)
         # Ensure parent directory exists
         Path(history_path).parent.mkdir(parents=True, exist_ok=True)
