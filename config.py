@@ -96,6 +96,14 @@ class PipelineConfig:
 
 
 @dataclass(frozen=True)
+class OcrConfig:
+    """Auto-OCR via GPT vision configuration."""
+    enabled: bool = field(default_factory=lambda: os.getenv("OCR_ENABLED", "true").lower() == "true")
+    model: str = os.getenv("OCR_MODEL", "gpt-4o-mini")
+    max_tokens: int = int(os.getenv("OCR_MAX_TOKENS", "500"))
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Top-level application configuration aggregating all sub-configs."""
 
@@ -106,6 +114,7 @@ class AppConfig:
     log: LogConfig = field(default_factory=LogConfig)
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     browser_vision: BrowserVisionConfig = field(default_factory=BrowserVisionConfig)
+    ocr: OcrConfig = field(default_factory=OcrConfig)
     sandbox_mode: str = os.getenv("SANDBOX_MODE", "docker")
 
 

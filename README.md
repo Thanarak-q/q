@@ -25,6 +25,7 @@ playwright install chromium
 - **Flag auto-stop** — detects flags in tool output and stops immediately
 - **Scope lock** — prevents agent from drifting to unrelated challenges
 - **Browser automation** — Playwright headless browser for JS-heavy web challenges
+- **Auto-OCR** — GPT vision analyzes screenshots and images, deciding autonomously whether to extract text (flags, CAPTCHAs, challenge content)
 - **Benchmark system** — measure solve rate, cost, and steps per category
 - **Knowledge base** — learns from past solves, suggests techniques for similar challenges
 - **Stats dashboard** — track performance, win streaks, and cost over time
@@ -144,9 +145,12 @@ User Input -> Input Filter -> Classifier -> Single Agent (with skill prompts) ->
 |------|-------------|
 | `shell` | Execute shell commands (strings, binwalk, checksec, etc.) |
 | `python_exec` | Run Python scripts (pwntools, crypto, z3, etc.) |
-| `file_manager` | Read/write/list files, detect file types |
+| `file_manager` | Read/write/list files; auto-OCRs image files via GPT vision |
 | `network` | HTTP requests and raw TCP socket connections |
-| `browser` | Headless Chromium via Playwright (navigate, click, JS, cookies) |
+| `browser` | Headful Chromium via Playwright (navigate, click, JS, cookies); auto-OCRs screenshots and downloaded images |
+| `debugger` | Persistent GDB/pwndbg session via pexpect |
+| `pwntools_session` | Persistent pwntools connection (send/recv/ROP gadgets) |
+| `netcat_session` | Raw TCP/UDP persistent sessions |
 | `answer_user` | Provide answers with confidence scores and flags |
 
 ## Benchmarks
@@ -188,6 +192,9 @@ All settings via environment variables or `.env` file:
 | `MAX_COST_PER_CHALLENGE` | `2.00` | Budget limit per challenge (USD) |
 | `SANDBOX_MODE` | `docker` | Execution mode (`docker` or `local`) |
 | `TOOL_TIMEOUT_BROWSER_MS` | `30000` | Browser action timeout (ms) |
+| `OCR_ENABLED` | `true` | Enable auto-OCR on screenshots/images |
+| `OCR_MODEL` | `gpt-4o-mini` | Vision model for OCR decisions |
+| `OCR_MAX_TOKENS` | `500` | Max tokens for OCR response |
 
 YAML config is also supported for per-target settings:
 
@@ -253,6 +260,7 @@ q/
 │   ├── cost_tracker.py         # Token/cost tracking
 │   ├── audit_log.py            # Audit logging
 │   ├── flag_extractor.py       # Flag pattern matching + validation
+│   ├── ocr.py                  # Auto-OCR via GPT vision (analyze_image)
 │   └── logger.py               # Structured logging
 └── .github/
     └── workflows/
