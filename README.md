@@ -28,7 +28,7 @@ git --version
 Run the one-line installer:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Thanarak-q/q/main/ctf-agent/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/Thanarak-q/q/main/install.sh | bash
 ```
 
 This will:

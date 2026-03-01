@@ -9,7 +9,7 @@ RESET='\033[0m'
 
 REPO="https://github.com/Thanarak-q/q"
 REPO_DIR="$HOME/.local/share/agentq"
-APP_DIR="$REPO_DIR/ctf-agent"
+APP_DIR="$REPO_DIR"
 
 echo -e "\n${BOLD}Installing agentq...${RESET}\n"
 
