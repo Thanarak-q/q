@@ -36,6 +36,8 @@ COMMAND_HELP: dict[str, str] = {
     "/sessions": "List all saved sessions",
     "/history": "Show solve history for this session",
     # Settings
+    "/settings": "Show all settings from ~/.q/settings.json",
+    "/settings <key> <value>": "Update a setting (e.g. /settings openai_api_key sk-...)",
     "/model [name]": "Show or change the model (gpt-4o, gpt-4o-mini, o3)",
     "/config [load|show]": "Show config, load YAML, or show target details",
     "/cost": "Show token usage and cost for this session",
@@ -98,6 +100,7 @@ def handle_command(
         "/benchmark": _cmd_benchmark,
         "/workflow": _cmd_workflow,
         "/rewind": _cmd_rewind,
+        "/settings": _cmd_settings,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -548,7 +551,7 @@ def _cmd_audit(arg: str, state: ChatState, display: Display) -> bool:
         if not entries:
             display.show_info(f"No audit log for session {sid}.")
             return False
-        csv_path = Path("reports") / f"{sid}_audit.csv"
+        csv_path = Path.home() / ".q" / "reports" / f"{sid}_audit.csv"
         export_audit_csv(entries, csv_path)
         display.show_info(f"Audit exported to {csv_path}")
         return False
@@ -854,6 +857,89 @@ def _cmd_rewind(arg: str, state: ChatState, display: Display) -> bool:
     display.show_info(result_msg)
     display.console.print(
         "  [dim]Type a new hint or instruction before the agent continues.[/dim]\n"
+    )
+    return False
+
+
+def _cmd_settings(arg: str, state: ChatState, display: Display) -> bool:
+    import json
+    from rich.table import Table
+
+    settings_file = Path.home() / ".q" / "settings.json"
+
+    # Load current settings
+    try:
+        settings = json.loads(settings_file.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        settings = {}
+    except json.JSONDecodeError as exc:
+        display.show_error(f"settings.json is invalid JSON: {exc}")
+        return False
+
+    # /settings <key> <value> — update a value
+    if arg:
+        parts = arg.split(maxsplit=1)
+        if len(parts) < 2:
+            display.show_error("Usage: /settings <key> <value>")
+            return False
+
+        key, value = parts[0].strip(), parts[1].strip()
+
+        # Auto-cast value type to match existing type
+        if key in settings:
+            existing = settings[key]
+            try:
+                if isinstance(existing, bool):
+                    value = value.lower() in ("true", "1", "yes")
+                elif isinstance(existing, int):
+                    value = int(value)
+                elif isinstance(existing, float):
+                    value = float(value)
+            except ValueError:
+                pass  # keep as string
+
+        settings[key] = value
+        settings_file.write_text(
+            json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        # Mask key in output
+        display_val = ("sk-..." + value[-4:]) if "key" in key and len(value) > 8 else value
+        display.show_info(f"Saved: {key} = {display_val}")
+        display.show_info("Restart agentq or start a new solve for changes to take effect.")
+        return False
+
+    # /settings — show all current settings
+    _KEY_GROUPS = [
+        ("API Keys",     ["openai_api_key", "anthropic_api_key", "google_api_key"]),
+        ("Models",       ["default_model", "fast_model", "reasoning_model", "fallback_model"]),
+        ("Agent",        ["max_iterations", "max_cost_per_challenge", "streaming", "temperature", "max_tokens"]),
+        ("Timeouts",     ["shell_timeout", "python_timeout", "network_timeout"]),
+        ("Sandbox",      ["sandbox_mode", "docker_image", "docker_mem"]),
+        ("Logging",      ["log_level"]),
+    ]
+
+    display.console.print(f"\n  [bold]Settings[/bold]  [dim]{settings_file}[/dim]\n")
+
+    for group_name, keys in _KEY_GROUPS:
+        group_vals = {k: settings[k] for k in keys if k in settings}
+        if not group_vals:
+            continue
+        table = Table(title=group_name, show_header=False, box=None, padding=(0, 2))
+        table.add_column("Key", style="cyan", min_width=28)
+        table.add_column("Value")
+        for k, v in group_vals.items():
+            if "key" in k and isinstance(v, str) and len(v) > 8:
+                display_v = v[:8] + "..." + v[-4:]
+            else:
+                display_v = str(v)
+            table.add_row(k, display_v)
+        display.console.print(table)
+        display.console.print()
+
+    display.console.print(
+        "  [dim]Set a value: /settings <key> <value>[/dim]\n"
+        "  [dim]Example:    /settings openai_api_key sk-...[/dim]\n"
     )
     return False
 

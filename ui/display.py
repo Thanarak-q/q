@@ -49,6 +49,7 @@ class Display:
         model: str,
         sandbox: str = "local",
         workspace: str = "~",
+        first_run: bool = False,
     ) -> None:
         """Display the startup box with capybara mascot."""
         from ui.mascot import CAPYBARA
@@ -67,11 +68,12 @@ class Display:
             pass
 
         # Right-side info — each entry is (text, Rich style).
+        greeting = "Welcome to q!" if first_run else "Welcome back!"
         right: list[tuple[str, str]] = [
-            ("Welcome back!", "bold white"),
+            (greeting, "bold white"),
             ("", ""),
         ]
-        if stats_line:
+        if stats_line and not first_run:
             right.append((stats_line, "dim"))
         else:
             right.append(("q is a green capybara CTF solver", "dim"))
@@ -399,6 +401,18 @@ class Display:
         self.console.print(
             f"\n[dim]Session: {challenges_solved} challenges \u00b7 "
             f"${total_cost:.4f} total. Goodbye![/dim]\n"
+        )
+
+    def show_setup_needed(self) -> None:
+        """Display first-run setup instructions when no API key is set."""
+        self.console.print(
+            "\n[bold yellow]Setup required[/bold yellow]\n\n"
+            "  No API key found. Set one to start solving:\n\n"
+            "  [bold]/settings openai_api_key sk-...[/bold]       OpenAI\n"
+            "  [bold]/settings anthropic_api_key sk-ant-...[/bold]  Anthropic\n\n"
+            "  Get keys at:\n"
+            "    OpenAI    → [dim]platform.openai.com/api-keys[/dim]\n"
+            "    Anthropic → [dim]console.anthropic.com/settings/keys[/dim]\n"
         )
 
     def clear(self) -> None:

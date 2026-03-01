@@ -145,7 +145,7 @@ class BrowserTool(BaseTool):
         self._ocr_cfg = cfg.ocr
 
         # Screenshots directory (for manual screenshot/download_image saves)
-        self._screenshots_dir = Path("sessions/screenshots")
+        self._screenshots_dir = Path.home() / ".q" / "sessions" / "screenshots"
         self._screenshots_dir.mkdir(parents=True, exist_ok=True)
         self._screenshot_count = 0
 

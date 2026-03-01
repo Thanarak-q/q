@@ -617,15 +617,6 @@ def chat_loop(
         verbose=verbose,
     )
 
-    # Check API key
-    if not config.model.api_key:
-        print(
-            "\nError: OPENAI_API_KEY not set.\n"
-            "Set it in your .env file or environment:\n"
-            "  export OPENAI_API_KEY=sk-...\n"
-        )
-        sys.exit(1)
-
     # Init display and state
     display = Display()
     # Apply YAML config overrides
@@ -650,12 +641,19 @@ def chat_loop(
     state.docker_manager = setup_docker(config)
     state.sandbox_display = "docker" if state.docker_manager else "local"
 
+    # Detect first run — no API key set
+    _no_key = not config.model.api_key and not config.model.anthropic_api_key
+
     # Minimal welcome banner (after docker so we show the actual mode)
     display.show_banner(
         model=state.current_model,
         sandbox=state.sandbox_display,
         workspace=str(state.workspace),
+        first_run=_no_key,
     )
+
+    if _no_key:
+        display.show_setup_needed()
 
     # Show YAML config info if loaded
     if yaml_config and config_path:
@@ -755,6 +753,13 @@ def chat_loop(
                 continue
 
             elif action["action"] == "solve":
+                # Reload config in case user just set an API key via /settings
+                if not state.config.model.api_key and not state.config.model.anthropic_api_key:
+                    state.config = load_config()
+                    state.current_model = state.config.model.default_model
+                if not state.config.model.api_key and not state.config.model.anthropic_api_key:
+                    display.show_setup_needed()
+                    continue
                 display.console.print()
                 run_solve(action["text"], state, display, callbacks, watch_mode=watch)
 

@@ -1,145 +1,217 @@
 """Configuration management for ctf-agent.
 
-Loads settings from environment variables / .env file with sensible defaults.
-Supports multi-model strategy, cost budgets, and sandbox mode selection.
+Loads settings from ~/.q/settings.json with hardcoded defaults.
 """
 
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+SETTINGS_FILE = Path.home() / ".q" / "settings.json"
 
-load_dotenv()
+
+def _load_settings() -> dict:
+    """Read ~/.q/settings.json. Returns empty dict if missing or malformed."""
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """LLM model configuration with multi-model tiers."""
-
-    fast_model: str = os.getenv("FAST_MODEL", "gpt-4o-mini")
-    default_model: str = os.getenv("DEFAULT_MODEL", "gpt-4o")
-    reasoning_model: str = os.getenv("REASONING_MODEL", "o3")
-    api_key: str = os.getenv("OPENAI_API_KEY", "")
-    temperature: float = float(os.getenv("CTF_TEMPERATURE", "0.2"))
-    max_tokens: int = int(os.getenv("CTF_MAX_TOKENS", "4096"))
-    streaming: bool = field(default_factory=lambda: os.getenv("CTF_STREAMING", "true").lower() != "false")
-    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
-    google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
-    fallback_model: str = os.getenv("FALLBACK_MODEL", "")
+    fast_model: str = "gpt-4o-mini"
+    default_model: str = "gpt-4o"
+    reasoning_model: str = "o3"
+    api_key: str = ""
+    temperature: float = 0.2
+    max_tokens: int = 4096
+    streaming: bool = True
+    anthropic_api_key: str = ""
+    google_api_key: str = ""
+    fallback_model: str = ""
 
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Agent loop configuration."""
-
-    max_iterations: int = int(os.getenv("MAX_ITERATIONS", "15"))
-    stall_threshold: int = int(os.getenv("STALL_THRESHOLD", "5"))
-    context_limit_percent: int = int(os.getenv("CONTEXT_LIMIT_PERCENT", "80"))
-    tool_output_max_chars: int = int(os.getenv("TOOL_OUTPUT_MAX_CHARS", "4000"))
-    max_cost_per_challenge: float = float(os.getenv("MAX_COST_PER_CHALLENGE", "2.00"))
+    max_iterations: int = 15
+    stall_threshold: int = 5
+    context_limit_percent: int = 80
+    tool_output_max_chars: int = 4000
+    max_cost_per_challenge: float = 2.00
 
 
 @dataclass(frozen=True)
 class ToolConfig:
-    """Tool execution configuration."""
-
-    shell_timeout: int = int(os.getenv("TOOL_TIMEOUT_SHELL", "30"))
-    python_timeout: int = int(os.getenv("TOOL_TIMEOUT_PYTHON", "60"))
-    network_timeout: int = int(os.getenv("TOOL_TIMEOUT_NETWORK", "30"))
-    browser_timeout_ms: int = int(os.getenv("TOOL_TIMEOUT_BROWSER_MS", "30000"))
+    shell_timeout: int = 30
+    python_timeout: int = 60
+    network_timeout: int = 30
+    browser_timeout_ms: int = 30000
 
 
 @dataclass(frozen=True)
 class DockerConfig:
-    """Docker sandbox configuration."""
-
-    image_name: str = os.getenv("DOCKER_IMAGE", "ctf-agent-sandbox")
-    memory_limit: str = os.getenv("DOCKER_MEM", "512m")
-    cpu_quota: int = int(os.getenv("DOCKER_CPU_QUOTA", "50000"))
+    image_name: str = "ctf-agent-sandbox"
+    memory_limit: str = "512m"
+    cpu_quota: int = 50000
     network_mode: str = "bridge"
     work_dir: str = "/workspace"
 
 
 @dataclass(frozen=True)
 class LogConfig:
-    """Logging configuration."""
-
-    level: str = os.getenv("LOG_LEVEL", "INFO")
-    log_dir: Path = Path(os.getenv("LOG_DIR", "logs"))
-    session_dir: Path = Path(os.getenv("SESSION_DIR", "sessions"))
+    level: str = "INFO"
+    log_dir: Path = Path.home() / ".q" / "logs"
+    session_dir: Path = Path.home() / ".q" / "sessions"
 
 
 @dataclass(frozen=True)
 class BrowserVisionConfig:
-    """Browser watch mode configuration (always headful)."""
-
-    watch_mode: bool = os.getenv("BROWSER_WATCH", "true").lower() == "true"
-    slow_mo_ms: int = int(os.getenv("BROWSER_SLOW_MO", "300"))
-    viewport_width: int = int(os.getenv("BROWSER_VIEWPORT_W", "1280"))
-    viewport_height: int = int(os.getenv("BROWSER_VIEWPORT_H", "720"))
+    watch_mode: bool = True
+    slow_mo_ms: int = 300
+    viewport_width: int = 1280
+    viewport_height: int = 720
 
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    """Multi-agent pipeline configuration."""
-
-    mode: str = os.getenv("PIPELINE_MODE", "single")  # single (legacy multi removed)
-    max_parallel_solvers: int = int(os.getenv("MAX_PARALLEL_SOLVERS", "3"))
-    recon_max_steps: int = int(os.getenv("RECON_MAX_STEPS", "4"))
-    analyst_max_steps: int = int(os.getenv("ANALYST_MAX_STEPS", "6"))
-    solver_max_steps: int = int(os.getenv("SOLVER_MAX_STEPS", "8"))
-    reporter_max_steps: int = int(os.getenv("REPORTER_MAX_STEPS", "3"))
-    fast_path_enabled: bool = os.getenv("FAST_PATH_ENABLED", "true").lower() == "true"
+    mode: str = "single"
+    max_parallel_solvers: int = 3
+    recon_max_steps: int = 4
+    analyst_max_steps: int = 6
+    solver_max_steps: int = 8
+    reporter_max_steps: int = 3
+    fast_path_enabled: bool = True
 
 
 @dataclass(frozen=True)
 class OcrConfig:
-    """Auto-OCR via GPT vision configuration."""
-    enabled: bool = field(default_factory=lambda: os.getenv("OCR_ENABLED", "true").lower() == "true")
-    model: str = os.getenv("OCR_MODEL", "gpt-4o-mini")
-    max_tokens: int = int(os.getenv("OCR_MAX_TOKENS", "500"))
+    enabled: bool = True
+    model: str = "gpt-4o-mini"
+    max_tokens: int = 500
 
 
 @dataclass(frozen=True)
 class AppConfig:
-    """Top-level application configuration aggregating all sub-configs."""
+    model: ModelConfig = None
+    agent: AgentConfig = None
+    tool: ToolConfig = None
+    docker: DockerConfig = None
+    log: LogConfig = None
+    pipeline: PipelineConfig = None
+    browser_vision: BrowserVisionConfig = None
+    ocr: OcrConfig = None
+    sandbox_mode: str = "docker"
 
-    model: ModelConfig = field(default_factory=ModelConfig)
-    agent: AgentConfig = field(default_factory=AgentConfig)
-    tool: ToolConfig = field(default_factory=ToolConfig)
-    docker: DockerConfig = field(default_factory=DockerConfig)
-    log: LogConfig = field(default_factory=LogConfig)
-    pipeline: PipelineConfig = field(default_factory=PipelineConfig)
-    browser_vision: BrowserVisionConfig = field(default_factory=BrowserVisionConfig)
-    ocr: OcrConfig = field(default_factory=OcrConfig)
-    sandbox_mode: str = os.getenv("SANDBOX_MODE", "docker")
+    def __post_init__(self):
+        # Allow None fields to be set via object.__setattr__ since frozen=True
+        for field_name, default in [
+            ("model", ModelConfig()),
+            ("agent", AgentConfig()),
+            ("tool", ToolConfig()),
+            ("docker", DockerConfig()),
+            ("log", LogConfig()),
+            ("pipeline", PipelineConfig()),
+            ("browser_vision", BrowserVisionConfig()),
+            ("ocr", OcrConfig()),
+        ]:
+            if getattr(self, field_name) is None:
+                object.__setattr__(self, field_name, default)
 
 
-# Pricing per 1M tokens (USD) – updated as of 2025 pricing
+# Pricing per 1M tokens (USD)
 MODEL_PRICING: dict[str, dict[str, float]] = {
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "o3": {"input": 10.00, "output": 40.00},
     "o3-mini": {"input": 1.10, "output": 4.40},
     "gpt-4-turbo": {"input": 10.00, "output": 30.00},
-    # Anthropic models
     "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
     "claude-sonnet-4-5-20250514": {"input": 3.00, "output": 15.00},
     "claude-haiku-3-5": {"input": 0.80, "output": 4.00},
     "claude-opus-4": {"input": 15.00, "output": 75.00},
-    # Google models
     "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
     "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
 }
 
 
 def load_config() -> AppConfig:
-    """Load and return the application configuration.
+    """Load config from ~/.q/settings.json with hardcoded defaults."""
+    s = _load_settings()
 
-    Returns:
-        AppConfig with all sub-configurations populated from env vars.
-    """
-    return AppConfig()
+    model = ModelConfig(
+        fast_model=s.get("fast_model", "gpt-4o-mini"),
+        default_model=s.get("default_model", "gpt-4o"),
+        reasoning_model=s.get("reasoning_model", "o3"),
+        api_key=s.get("openai_api_key", os.getenv("OPENAI_API_KEY", "")),
+        temperature=s.get("temperature", 0.2),
+        max_tokens=s.get("max_tokens", 4096),
+        streaming=s.get("streaming", True),
+        anthropic_api_key=s.get("anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", "")),
+        google_api_key=s.get("google_api_key", os.getenv("GOOGLE_API_KEY", "")),
+        fallback_model=s.get("fallback_model", ""),
+    )
+
+    agent = AgentConfig(
+        max_iterations=s.get("max_iterations", 15),
+        stall_threshold=s.get("stall_threshold", 5),
+        context_limit_percent=s.get("context_limit_percent", 80),
+        tool_output_max_chars=s.get("tool_output_max_chars", 4000),
+        max_cost_per_challenge=s.get("max_cost_per_challenge", 2.00),
+    )
+
+    tool = ToolConfig(
+        shell_timeout=s.get("shell_timeout", 30),
+        python_timeout=s.get("python_timeout", 60),
+        network_timeout=s.get("network_timeout", 30),
+        browser_timeout_ms=s.get("browser_timeout_ms", 30000),
+    )
+
+    docker = DockerConfig(
+        image_name=s.get("docker_image", "ctf-agent-sandbox"),
+        memory_limit=s.get("docker_mem", "512m"),
+        cpu_quota=s.get("docker_cpu_quota", 50000),
+    )
+
+    log = LogConfig(
+        level=s.get("log_level", "INFO"),
+        log_dir=Path(s.get("log_dir", str(Path.home() / ".q" / "logs"))),
+        session_dir=Path(s.get("session_dir", str(Path.home() / ".q" / "sessions"))),
+    )
+
+    browser_vision = BrowserVisionConfig(
+        watch_mode=s.get("browser_watch", True),
+        slow_mo_ms=s.get("browser_slow_mo", 300),
+        viewport_width=s.get("browser_viewport_w", 1280),
+        viewport_height=s.get("browser_viewport_h", 720),
+    )
+
+    pipeline = PipelineConfig(
+        max_parallel_solvers=s.get("max_parallel_solvers", 3),
+        recon_max_steps=s.get("recon_max_steps", 4),
+        analyst_max_steps=s.get("analyst_max_steps", 6),
+        solver_max_steps=s.get("solver_max_steps", 8),
+        reporter_max_steps=s.get("reporter_max_steps", 3),
+        fast_path_enabled=s.get("fast_path_enabled", True),
+    )
+
+    ocr = OcrConfig(
+        enabled=s.get("ocr_enabled", True),
+        model=s.get("ocr_model", "gpt-4o-mini"),
+        max_tokens=s.get("ocr_max_tokens", 500),
+    )
+
+    return AppConfig(
+        model=model,
+        agent=agent,
+        tool=tool,
+        docker=docker,
+        log=log,
+        pipeline=pipeline,
+        browser_vision=browser_vision,
+        ocr=ocr,
+        sandbox_mode=s.get("sandbox_mode", "docker"),
+    )
