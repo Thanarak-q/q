@@ -98,7 +98,7 @@ mkdir -p ~/.local/bin
 cat > ~/.local/bin/agentq <<EOF
 #!/usr/bin/env bash
 REPO_DIR="\$HOME/.local/share/agentq"
-APP_DIR="\$REPO_DIR/ctf-agent"
+APP_DIR="\$REPO_DIR"
 PYTHON="$PYTHON"
 
 # Handle update subcommand
