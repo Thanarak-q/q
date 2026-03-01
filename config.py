@@ -113,6 +113,7 @@ class AppConfig:
     browser_vision: BrowserVisionConfig = None
     ocr: OcrConfig = None
     team: TeamConfig = None
+    plan_mode: bool = True
     sandbox_mode: str = "docker"
 
     def __post_init__(self):
@@ -231,5 +232,6 @@ def load_config() -> AppConfig:
         browser_vision=browser_vision,
         ocr=ocr,
         team=team,
+        plan_mode=s.get("plan_mode", True),
         sandbox_mode=s.get("sandbox_mode", "docker"),
     )

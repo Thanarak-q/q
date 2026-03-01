@@ -678,6 +678,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Enable team mode (multiple agents collaborate to solve).",
     )
+    parser.add_argument(
+        "--no-plan",
+        action="store_true",
+        default=False,
+        dest="no_plan",
+        help="Skip plan approval step and solve immediately.",
+    )
 
     # --mode kept for backward compat but ignored (always single agent)
     parser.add_argument(
@@ -739,6 +746,7 @@ def main() -> None:
             config_path=args.config,
             watch=args.watch,
             team=args.team,
+            no_plan=args.no_plan,
         )
 
 

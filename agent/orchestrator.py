@@ -447,6 +447,7 @@ class Orchestrator:
         target_url: str | None = None,
         flag_pattern: str | None = None,
         forced_category: str | None = None,
+        forced_plan: str | None = None,
     ) -> SolveResult:
         """Solve a CTF challenge.
 
@@ -690,11 +691,15 @@ class Orchestrator:
 
         # --- Phase 2: Planning ---
         self._session.transition(WorkflowState.PLANNING, f"Category: {category.value}")
-        self._cb.on_phase("Planning", "Creating attack plan...")
-        plan = create_plan(
-            description, category, file_info, self._provider, self._config
-        )
-        self._cb.on_thinking(plan)
+        if forced_plan:
+            plan = forced_plan
+            self._cb.on_phase("Planning", "Using approved plan...")
+        else:
+            self._cb.on_phase("Planning", "Creating attack plan...")
+            plan = create_plan(
+                description, category, file_info, self._provider, self._config
+            )
+            self._cb.on_thinking(plan)
         self._session.update(plan=plan)
 
         # Audit: plan

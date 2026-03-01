@@ -79,6 +79,9 @@ class ChatState:
     team_mode: bool = False
     _team_leader: Any = None
 
+    # Plan mode
+    plan_mode: bool = True
+
 
 # ------------------------------------------------------------------
 # Chat UI callback implementation — tree-structured output
@@ -428,6 +431,50 @@ def setup_docker(config: AppConfig) -> Any:
 
 
 # ------------------------------------------------------------------
+# Plan phase
+# ------------------------------------------------------------------
+
+
+def _run_plan_phase(
+    description: str,
+    state: ChatState,
+    display: Display,
+) -> tuple[str | None, str | None]:
+    """Run classify + plan before the main solve.
+
+    Returns (category_str, plan_text) or (None, None) on failure.
+    """
+    from agent.classifier import classify_challenge
+    from agent.planner import create_plan
+    from agent.providers.router import ProviderRouter
+
+    spinner = PhaseSpinner(display.console)
+    try:
+        with spinner:
+            spinner.set_phase("classify")
+            provider = ProviderRouter(state.config)
+            category = classify_challenge(
+                description=description,
+                file_info="",
+                client=provider,
+                config=state.config,
+            )
+            spinner.set_phase("plan")
+            plan = create_plan(
+                description=description,
+                category=category,
+                file_info="",
+                client=provider,
+                config=state.config,
+            )
+    except Exception as exc:
+        display.show_error(f"Planning failed: {exc}")
+        return None, None
+
+    return category.value, plan
+
+
+# ------------------------------------------------------------------
 # Solve logic
 # ------------------------------------------------------------------
 
@@ -443,6 +490,27 @@ def run_solve(
     # --- Team mode: delegate to TeamLeader ---
     if state.team_mode:
         return _run_team_solve(description, state, display, callbacks)
+
+    # --- Plan mode: classify + plan, show to user, get approval ---
+    forced_plan: str | None = None
+    if state.plan_mode and not state.resume_session_id:
+        cat_str, plan_text = _run_plan_phase(description, state, display)
+        if plan_text is None:
+            return None  # planning failed, abort
+        display.show_plan(plan_text, cat_str or "?")
+        try:
+            response = input("  plan> ").strip()
+        except (KeyboardInterrupt, EOFError):
+            display.console.print("\n  [dim]Cancelled.[/dim]")
+            return None
+        if response.lower() in ("skip", "s", "no", "cancel"):
+            display.show_info("Plan skipped.")
+        else:
+            if response:
+                plan_text += f"\n\nUser notes: {response}"
+            forced_plan = plan_text
+            if cat_str and not state.forced_category:
+                state.forced_category = cat_str
 
     # Shared cost tracker across session
     if state.session_cost_tracker is None:
@@ -511,6 +579,7 @@ def run_solve(
                             target_url=state.pending_url,
                             flag_pattern=state.flag_pattern,
                             forced_category=state.forced_category,
+                            forced_plan=forced_plan,
                         )
             except KeyboardInterrupt:
                 display.show_error("Interrupted.")
@@ -544,6 +613,7 @@ def run_solve(
                         target_url=state.pending_url,
                         flag_pattern=state.flag_pattern,
                         forced_category=state.forced_category,
+                        forced_plan=forced_plan,
                     )
         except KeyboardInterrupt:
             display.show_error("Interrupted.")
@@ -738,6 +808,7 @@ def chat_loop(
     config_path: str | None = None,
     watch: bool = False,
     team: bool = False,
+    no_plan: bool = False,
 ) -> None:
     """Run the main interactive chat loop.
 
@@ -773,6 +844,7 @@ def chat_loop(
         repo_path=repo_path,
         yaml_config_path=config_path,
         team_mode=team or config.team.enabled,
+        plan_mode=config.plan_mode and not no_plan,
     )
     callbacks = ChatCallbacks(display, state)
 

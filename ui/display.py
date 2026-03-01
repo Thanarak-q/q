@@ -249,6 +249,25 @@ class Display:
     # Errors and info — used during solve and by commands
     # ------------------------------------------------------------------
 
+    def show_plan(self, plan: str, category: str) -> None:
+        """Display attack plan panel and prompt hint for user approval."""
+        from rich.panel import Panel
+
+        lines = [ln for ln in plan.strip().splitlines() if ln.strip()]
+        body = "\n".join(f"  {ln}" for ln in lines)
+        self.console.print()
+        self.console.print(
+            Panel(
+                body,
+                title=f"[bold]Attack Plan[/bold]  [dim]{category}[/dim]",
+                border_style="cyan",
+                padding=(0, 1),
+            )
+        )
+        self.console.print(
+            "  [dim]Enter to solve · type to add notes · 'skip' to skip plan[/dim]\n"
+        )
+
     def show_error(self, message: str) -> None:
         """Display an error message."""
         self.console.print(f"[error]{message}[/error]")

@@ -40,6 +40,8 @@ COMMAND_HELP: dict[str, str] = {
     "/team on, /team off": "Enable/disable team solving",
     "/team tasks": "Show team task board",
     "/team messages": "Show team message log",
+    # Plan mode
+    "/plan [on|off]": "Toggle plan-before-solve mode (shows attack plan for approval)",
     # Settings
     "/settings": "Show all settings from ~/.q/settings.json",
     "/settings <key> <value>": "Update a setting (e.g. /settings openai_api_key sk-...)",
@@ -107,6 +109,7 @@ def handle_command(
         "/rewind": _cmd_rewind,
         "/settings": _cmd_settings,
         "/team": _cmd_team,
+        "/plan": _cmd_plan,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -1004,6 +1007,24 @@ def _cmd_settings(arg: str, state: ChatState, display: Display) -> bool:
         "  [dim]Set a value: /settings <key> <value>[/dim]\n"
         "  [dim]Example:    /settings openai_api_key sk-...[/dim]\n"
     )
+    return False
+
+
+def _cmd_plan(arg: str, state: ChatState, display: Display) -> bool:
+    a = arg.strip().lower()
+    if a == "on":
+        state.plan_mode = True
+        display.show_info("Plan mode ON — q will show attack plan for approval before solving.")
+    elif a == "off":
+        state.plan_mode = False
+        display.show_info("Plan mode OFF — q will solve immediately without pausing.")
+    else:
+        status = "ON" if getattr(state, "plan_mode", True) else "OFF"
+        display.console.print(
+            f"\n  [bold]Plan mode:[/bold] {status}\n\n"
+            f"  [dim]/plan on   Show attack plan before solving (default)[/dim]\n"
+            f"  [dim]/plan off  Skip plan, solve immediately[/dim]\n"
+        )
     return False
 
 
