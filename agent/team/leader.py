@@ -91,6 +91,7 @@ class TeamLeader:
                         f"Your role: {mate.role}\n"
                         f"Instructions: {mate.prompt}"
                     ),
+                    assignee=mate.name,
                 )
                 phase1_tasks.append(task)
             else:
@@ -104,6 +105,7 @@ class TeamLeader:
                         "Wait for recon/analysis results before starting."
                     ),
                     blocked_by=[t.id for t in phase1_tasks],
+                    assignee=mate.name,
                 )
                 phase2_tasks.append(task)
 
@@ -157,15 +159,16 @@ class TeamLeader:
     ) -> None:
         """Run a single teammate in its own thread."""
         try:
-            # Wait for a task to become available
-            task = self._wait_for_task(mate.name, taskboard, msgbus)
-            if not task:
-                return
-
-            # Claim the task
-            if not taskboard.claim(task.id, mate.name):
-                _log.warning(f"[{mate.name}] Failed to claim {task.id}")
-                return
+            # Wait for a task, retry if claim races with another agent
+            task = None
+            while not self._cancel_event.is_set():
+                task = self._wait_for_task(mate.name, taskboard, msgbus)
+                if not task:
+                    return
+                if taskboard.claim(task.id, mate.name):
+                    break
+                _log.debug(f"[{mate.name}] Claim race on {task.id}, retrying...")
+                task = None
 
             self._cb.on_phase("Team", f"[{mate.name}] Started: {task.subject[:60]}")
 
@@ -179,12 +182,12 @@ class TeamLeader:
                 for tid, res in prior_results.items():
                     t = taskboard.get(tid)
                     label = t.subject if t else tid
-                    context_block += f"\n[{label}]\n{res[:2000]}\n"
+                    context_block += f"\n[{label}]\n{res}\n"
 
             if discoveries:
                 context_block += "\n\n--- DISCOVERIES ---\n"
-                for msg in discoveries[-10:]:
-                    context_block += f"[{msg.sender}] {msg.content[:500]}\n"
+                for msg in discoveries[-20:]:
+                    context_block += f"[{msg.sender}] {msg.content}\n"
 
             # Build enriched description
             enriched_desc = (
@@ -216,12 +219,16 @@ class TeamLeader:
             with results_lock:
                 results[mate.name] = result
 
-            # Update task
-            if result.success:
-                taskboard.complete(task.id, result.summary or f"Flags: {result.flags}")
-            else:
-                summary = result.summary or result.answer or "No results"
-                taskboard.complete(task.id, summary)
+            # Build comprehensive task result for next-phase agents to read
+            parts = []
+            if result.flags:
+                parts.append(f"FLAGS FOUND: {result.flags}")
+            if result.answer:
+                parts.append(f"Answer: {result.answer}")
+            if result.summary:
+                parts.append(result.summary)
+            task_result = "\n".join(parts) if parts else "No definitive results."
+            taskboard.complete(task.id, task_result[:4000])
 
             self._cb.on_phase("Team", f"[{mate.name}] Done: {'solved' if result.success else 'no flag'}")
 
@@ -234,12 +241,14 @@ class TeamLeader:
         name: str,
         taskboard: TaskBoard,
         msgbus: MessageBus,
-        timeout: float = 120.0,
+        timeout: float | None = None,
     ):
         """Wait until a task is available for this agent."""
+        if timeout is None:
+            timeout = float(self._config.team.task_timeout)
         start = time.time()
         while not self._cancel_event.is_set():
-            available = taskboard.list_available()
+            available = taskboard.list_available(for_agent=name)
             if available:
                 return available[0]
 

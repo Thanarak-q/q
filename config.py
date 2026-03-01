@@ -92,7 +92,7 @@ class TeamConfig:
     enabled: bool = False
     max_agents: int = 2
     budget_multiplier: float = 2.0
-    task_timeout: int = 120
+    task_timeout: int = 300
 
 
 @dataclass(frozen=True)

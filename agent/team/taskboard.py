@@ -17,6 +17,7 @@ class Task:
     description: str
     status: str = "pending"  # pending | in_progress | completed | failed
     owner: str = ""
+    assignee: str = ""  # pre-assigned agent name (empty = any agent can take it)
     blocked_by: list[str] = field(default_factory=list)
     result: str = ""
     created_at: float = 0.0
@@ -29,6 +30,7 @@ class Task:
             "description": self.description,
             "status": self.status,
             "owner": self.owner,
+            "assignee": self.assignee,
             "blocked_by": self.blocked_by,
             "result": self.result,
         }
@@ -47,6 +49,7 @@ class TaskBoard:
         subject: str,
         description: str = "",
         blocked_by: list[str] | None = None,
+        assignee: str = "",
     ) -> Task:
         with self._lock:
             self._counter += 1
@@ -56,6 +59,7 @@ class TaskBoard:
                 id=task_id,
                 subject=subject,
                 description=description,
+                assignee=assignee,
                 blocked_by=list(blocked_by or []),
                 created_at=now,
                 updated_at=now,
@@ -71,14 +75,19 @@ class TaskBoard:
         with self._lock:
             return list(self._tasks.values())
 
-    def list_available(self) -> list[Task]:
-        """Tasks that are pending, unblocked, and unowned."""
+    def list_available(self, for_agent: str = "") -> list[Task]:
+        """Tasks that are pending, unblocked, and unowned.
+
+        If for_agent is given, only returns tasks assigned to that agent
+        or tasks with no assignee.
+        """
         with self._lock:
             return [
                 t for t in self._tasks.values()
                 if t.status == "pending"
                 and not t.owner
                 and not self._is_blocked(t)
+                and (not t.assignee or not for_agent or t.assignee == for_agent)
             ]
 
     def claim(self, task_id: str, owner: str) -> bool:

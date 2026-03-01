@@ -58,10 +58,9 @@ class TeamCallbacks(AgentCallbacks):
         # Forward significant findings to lead
         if tool_name in ("recon", "shell", "network", "browser", "code_analyzer"):
             if len(output) > 50:
-                summary = output[:500]
                 self._msgbus.send(
                     self._name, "lead",
-                    f"[{tool_name}] {summary}",
+                    f"[{tool_name}] {output[:2000]}",
                     "discovery",
                 )
 
