@@ -95,22 +95,40 @@ fi
 # ── 7. Install agentq command ─────────────────────────────────────────────────
 
 mkdir -p ~/.local/bin
-cat > ~/.local/bin/agentq <<EOF
+cat > ~/.local/bin/agentq <<'EOF'
 #!/usr/bin/env bash
-REPO_DIR="\$HOME/.local/share/agentq"
-APP_DIR="\$REPO_DIR"
-PYTHON="$PYTHON"
+REPO_DIR="$HOME/.local/share/agentq"
+APP_DIR="$REPO_DIR"
+
+# Discover Python 3.10+ at runtime — never baked in at install time
+PYTHON=""
+for py in python3 python; do
+  if command -v "$py" &>/dev/null; then
+    ver=$("$py" -c "import sys; v=sys.version_info; print(v.major,v.minor)" 2>/dev/null)
+    major=$(echo "$ver" | cut -d' ' -f1)
+    minor=$(echo "$ver" | cut -d' ' -f2)
+    if [ "$major" -ge 3 ] && [ "$minor" -ge 10 ]; then
+      PYTHON="$py"
+      break
+    fi
+  fi
+done
+
+if [ -z "$PYTHON" ]; then
+  echo "Error: Python 3.10+ not found. Install from https://python.org"
+  exit 1
+fi
 
 # Handle update subcommand
-if [ "\$1" = "update" ]; then
+if [ "$1" = "update" ]; then
   echo "Updating agentq..."
-  git -C "\$REPO_DIR" pull
-  "\$PYTHON" -m pip install -r "\$APP_DIR/requirements.txt" --quiet --user
+  git -C "$REPO_DIR" pull
+  "$PYTHON" -m pip install -r "$APP_DIR/requirements.txt" --quiet --user
   echo "Done! agentq is up to date."
   exit 0
 fi
 
-exec "\$PYTHON" "\$APP_DIR/main.py" "\$@"
+exec "$PYTHON" "$APP_DIR/main.py" "$@"
 EOF
 chmod +x ~/.local/bin/agentq
 echo -e "${GREEN}✓${RESET} Installed agentq command"
