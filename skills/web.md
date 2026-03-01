@@ -39,42 +39,59 @@ Wrong endpoint? Use the error to guide your next attempt.
 
 ## Recon (Do This First for Live Targets)
 
-If challenge gives a URL, ALWAYS start with the recon tool:
+### Mandatory Web Recon Chain (follow this order EVERY time)
+
 ```
-recon(action="quick", target="http://target/")
-→ tech stack + interesting paths + headers in ONE call
+Step 1: network GET /        → read HTML source: comments, real <a href> links, form actions, JS src
+Step 2: network GET /robots.txt → ALWAYS check this. Often has passwords or hidden paths.
+Step 3: follow REAL links found in HTML (actual hrefs, not guesses)
+Step 4: ONLY if steps 1-3 yield nothing → recon(action="quick", target="http://target/")
+Step 5: ONLY if quick recon not enough → gobuster
 ```
 
-Only if quick recon isn't enough:
-```
-recon(action="nmap", target="target")           → find hidden services/ports
-recon(action="gobuster", target="http://target") → find hidden directories
-recon(action="nikto", target="http://target")    → vulnerability scan
-```
+**Do NOT skip to gobuster/recon before reading the page source.** Most CTF flags are reachable from real links in the HTML.
 
-DON'T run nmap/gobuster/nikto unless quick_recon didn't give enough info.
-Most CTF web challenges don't need heavy scanning.
-
-### Manual Recon (when recon tool is unavailable)
+### Reading HTML Source (Step 1)
 
 ```bash
-# 1. What's the tech stack?
-curl -sI http://target | head -20          # Server, X-Powered-By, Set-Cookie
-curl -s http://target/ | head -100         # HTML comments, JS files, hints
-
-# 2. Check common files
-curl -s http://target/robots.txt
-curl -s http://target/.git/HEAD            # Git leak
-curl -s http://target/.env                 # Environment variables
-curl -s http://target/sitemap.xml
-curl -s http://target/.DS_Store
-
-# 3. Identify language
-# .php → PHP, errors with Traceback → Python, /WEB-INF → Java
-# Cookie names: PHPSESSID=PHP, connect.sid=Node, JSESSIONID=Java
+network: GET http://target/
+→ Look for:
+  - HTML comments <!-- username: X, password: Y, hint: Z -->
+  - <a href="/login.php"> → real links, always follow these
+  - <form action="/submit"> → endpoints that accept input
+  - <script src="/static/app.js"> → JS files worth reading
+  - X-Powered-By header → PHP, Express, etc.
+  - Set-Cookie header → session cookie names reveal tech stack
 ```
 
-**After recon you should know:** backend language, interesting endpoints, cookies, headers.
+### robots.txt (Step 2 — ALWAYS check)
+
+```bash
+network: GET http://target/robots.txt
+→ Disallow entries are HINTS. They often point directly to the flag path.
+→ Content itself is sometimes a password or credential.
+```
+
+### Following Real Links (Step 3)
+
+When HTML has `<a href="/login.php">`:
+- That IS the login page. Fetch it. Don't guess `/login` without extension.
+- Try the `.php` / `.html` / `.aspx` extension that matches the tech stack.
+- If a path returns 404, try adding the extension:
+  ```
+  /login → 404? → try /login.php, /login.html, /login.aspx
+  ```
+
+### When to use the recon tool
+
+Only after steps 1-3 fail:
+```
+recon(action="quick", target="http://target/")   → tech stack + headers
+recon(action="gobuster", target="http://target/") → hidden paths (LAST RESORT)
+recon(action="nmap", target="target")             → only if port scanning needed
+```
+
+**After recon you should know:** backend language, real endpoints, credentials hints.
 
 ---
 
@@ -334,9 +351,9 @@ browser(action="send_request", url="http://target/api/flag", method="GET")
 browser(action="browser_close")
 ```
 
-**Rule of thumb:** Start with `network` tool. Switch to `browser` only when
-you see JavaScript-dependent content, need stateful sessions, or `network`
-results don't match what a real browser would see.
+**Rule of thumb:** ALWAYS start with `network` tool — never `browser` as first action.
+Switch to `browser` only when you see JavaScript-dependent content, need stateful
+sessions, or `network` results don't match what a real browser would see.
 
 ---
 
@@ -360,9 +377,16 @@ Priority order:
 After recon, follow this decision tree to pick your attack:
 
 ```
-START -> What did recon find?
+START -> Fetch / and robots.txt first (ALWAYS)
+  |
+  +-- robots.txt has hidden path or credential? → use it immediately
+  |
+  +-- HTML has real links (<a href>, form action)?
+  |     +-- Follow ALL of them before guessing anything
+  |     +-- Found /login.php, /portal.php, /admin.php? → go there next
   |
   +-- Login page?
+  |     +-- Found credentials anywhere (comments, robots.txt)? → login NOW
   |     +-- Try default creds (admin:admin, admin:password)
   |     +-- Check for SQLi in login fields
   |     +-- Check for type juggling (PHP: password=0)
@@ -404,8 +428,8 @@ START -> What did recon find?
   +-- Nothing obvious?
         +-- View page source for HTML comments
         +-- Check JS files for API endpoints/secrets
-        +-- Check robots.txt, .git/HEAD, .env
-        +-- Run gobuster for hidden paths
+        +-- Check .git/HEAD, .env, sitemap.xml
+        +-- Run gobuster for hidden paths (last resort)
 ```
 
 ---
@@ -450,11 +474,13 @@ Q can SEE web pages via screenshots. Use this for:
 
 ## CRITICAL RULES FOR AGENT
 
-1. **Recon first** — identify stack before attacking
-2. **Try simple payloads before complex ones**
-3. **Read the source** — HTML comments and JS files often have hints
-4. **Don't brute force** unless CTF explicitly allows it
-5. **Check cookies and headers** — flags sometimes hide there
-6. **Use the decision tree** — follow the structured approach above
-7. **Track what you tried** — don't repeat failed approaches
-8. **Check response analysis** — look at highlighted findings before next step
+1. **network first, browser never first** — first action is always `network GET /`, never `browser` or `recon`
+2. **robots.txt is step 2, always** — check it before ANY scanning or guessing
+3. **Follow real links** — extract actual `<a href>` from HTML and follow them; don't guess paths
+4. **Try .php extension** — if /path 404s and tech is PHP, try /path.php immediately
+5. **Credentials → login immediately** — if you find username/password anywhere, stop recon and login NOW
+6. **cat blocked? bypass it** — try `less`, `more`, `head`, `tail`, `python3 -c "print(open('f').read())"`
+7. **Try simple payloads before complex ones**
+8. **Don't brute force** unless CTF explicitly allows it
+9. **Check cookies and headers** — flags sometimes hide there
+10. **Track what you tried** — don't repeat failed approaches

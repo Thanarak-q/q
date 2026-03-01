@@ -26,56 +26,38 @@ from prompt_toolkit.styles import Style
 # ------------------------------------------------------------------
 
 
-# Command definitions: (command, description)
-# Kept in sync with ui/commands.py COMMAND_HELP
-SLASH_COMMANDS: dict[str, str] = {
-    "/help": "Show all commands",
-    "/stats": "Performance dashboard",
-    "/benchmark": "Run benchmark suite",
-    "/config": "Show/edit config",
-    "/model": "Switch AI model",
-    "/resume": "Resume interrupted session",
-    "/report": "View solve report",
-    "/audit": "View audit log",
-    "/knowledge": "Knowledge base stats",
-    "/repo": "Set source code path",
-    "/verbose": "Toggle verbose mode",
-    "/cost": "Show session cost",
-    "/history": "Show solve history",
-    "/file": "Load challenge file",
-    "/url": "Set target URL",
-    "/category": "Force challenge category",
-    "/sessions": "List saved sessions",
-    "/workflow": "Show workflow state",
-    "/clear": "Clear screen",
-    "/mode": "Show pipeline mode",
-    "/exit": "Quit Q",
-    "/quit": "Quit Q",
-}
-
-
 class SlashCommandCompleter(Completer):
     """Show command suggestions when user types /."""
 
+    _cache: dict[str, str] | None = None
+
+    def _get_commands(self) -> dict[str, str]:
+        if self._cache is None:
+            try:
+                from ui.commands import COMMAND_HELP
+                result = {}
+                for key, desc in COMMAND_HELP.items():
+                    for part in key.replace(",", " ").split():
+                        if part.startswith("/") and part not in result:
+                            result[part] = desc
+                self._cache = result
+            except Exception:
+                self._cache = {}
+        return self._cache
+
     def get_completions(self, document, complete_event):
-        # Use the raw text before cursor — no strip() so start_position
-        # is calculated correctly relative to the actual cursor position
         text = document.text_before_cursor
 
-        # Only complete if the input starts with /
         if not text.lstrip().startswith("/"):
             return
 
-        # Extract the word being typed (from last space or start)
-        # e.g. "  /st" → word="/st", "/config load" → skip (has space after cmd)
         word = text.lstrip()
 
-        # Don't complete if there's a space after the slash-word
-        # (user is typing arguments, not a command name)
+        # Don't complete if user is already typing arguments
         if " " in word:
             return
 
-        for cmd, desc in sorted(SLASH_COMMANDS.items()):
+        for cmd, desc in sorted(self._get_commands().items()):
             if cmd.startswith(word):
                 yield Completion(
                     cmd,

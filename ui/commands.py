@@ -35,7 +35,14 @@ COMMAND_HELP: dict[str, str] = {
     "/load <id>": "Load a saved session",
     "/sessions": "List all saved sessions",
     "/history": "Show solve history for this session",
+    # Team
+    "/team": "Show team status or toggle team mode",
+    "/team on, /team off": "Enable/disable team solving",
+    "/team tasks": "Show team task board",
+    "/team messages": "Show team message log",
     # Settings
+    "/settings": "Show all settings from ~/.q/settings.json",
+    "/settings <key> <value>": "Update a setting (e.g. /settings openai_api_key sk-...)",
     "/model [name]": "Show or change the model (gpt-4o, gpt-4o-mini, o3)",
     "/config [load|show]": "Show config, load YAML, or show target details",
     "/cost": "Show token usage and cost for this session",
@@ -98,6 +105,8 @@ def handle_command(
         "/benchmark": _cmd_benchmark,
         "/workflow": _cmd_workflow,
         "/rewind": _cmd_rewind,
+        "/settings": _cmd_settings,
+        "/team": _cmd_team,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -548,7 +557,7 @@ def _cmd_audit(arg: str, state: ChatState, display: Display) -> bool:
         if not entries:
             display.show_info(f"No audit log for session {sid}.")
             return False
-        csv_path = Path("reports") / f"{sid}_audit.csv"
+        csv_path = Path.home() / ".q" / "reports" / f"{sid}_audit.csv"
         export_audit_csv(entries, csv_path)
         display.show_info(f"Audit exported to {csv_path}")
         return False
@@ -854,6 +863,146 @@ def _cmd_rewind(arg: str, state: ChatState, display: Display) -> bool:
     display.show_info(result_msg)
     display.console.print(
         "  [dim]Type a new hint or instruction before the agent continues.[/dim]\n"
+    )
+    return False
+
+
+def _cmd_team(arg: str, state: ChatState, display: Display) -> bool:
+    from rich.table import Table
+
+    subcmd = arg.strip().lower()
+
+    # /team on — enable team mode
+    if subcmd in ("on", "enable", "start"):
+        state.team_mode = True
+        display.show_info("Team mode enabled. Next solve will use a coordinated team.")
+        return False
+
+    # /team off — disable team mode
+    if subcmd in ("off", "disable", "stop"):
+        state.team_mode = False
+        display.show_info("Team mode disabled. Next solve will use single agent.")
+        return False
+
+    # /team tasks — show task board
+    if subcmd == "tasks":
+        leader = getattr(state, "_team_leader", None)
+        if leader and hasattr(leader, "_last_taskboard"):
+            display.console.print(leader._last_taskboard.summary())
+        else:
+            display.show_info("No active team. Start a team solve first.")
+        return False
+
+    # /team messages — show message log
+    if subcmd == "messages":
+        leader = getattr(state, "_team_leader", None)
+        if leader and hasattr(leader, "_last_msgbus"):
+            msgs = leader._last_msgbus.get_log(limit=20)
+            if not msgs:
+                display.show_info("No messages yet.")
+                return False
+            table = Table(title="Team Messages", show_header=True)
+            table.add_column("From", style="cyan", max_width=12)
+            table.add_column("Type", max_width=10)
+            table.add_column("Content", max_width=60)
+            for m in msgs:
+                table.add_row(m.sender, m.msg_type, m.content[:60])
+            display.console.print(table)
+        else:
+            display.show_info("No active team.")
+        return False
+
+    # /team (no args) — show status
+    status = "ON" if getattr(state, "team_mode", False) else "OFF"
+    display.console.print(
+        f"\n  [bold]Team mode:[/bold] {status}\n\n"
+        f"  [dim]/team on       Enable team solving[/dim]\n"
+        f"  [dim]/team off      Disable team solving[/dim]\n"
+        f"  [dim]/team tasks    Show task board[/dim]\n"
+        f"  [dim]/team messages Show message log[/dim]\n"
+    )
+    return False
+
+
+def _cmd_settings(arg: str, state: ChatState, display: Display) -> bool:
+    import json
+    from rich.table import Table
+
+    settings_file = Path.home() / ".q" / "settings.json"
+
+    # Load current settings
+    try:
+        settings = json.loads(settings_file.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        settings = {}
+    except json.JSONDecodeError as exc:
+        display.show_error(f"settings.json is invalid JSON: {exc}")
+        return False
+
+    # /settings <key> <value> — update a value
+    if arg:
+        parts = arg.split(maxsplit=1)
+        if len(parts) < 2:
+            display.show_error("Usage: /settings <key> <value>")
+            return False
+
+        key, value = parts[0].strip(), parts[1].strip()
+
+        # Auto-cast value type to match existing type
+        if key in settings:
+            existing = settings[key]
+            try:
+                if isinstance(existing, bool):
+                    value = value.lower() in ("true", "1", "yes")
+                elif isinstance(existing, int):
+                    value = int(value)
+                elif isinstance(existing, float):
+                    value = float(value)
+            except ValueError:
+                pass  # keep as string
+
+        settings[key] = value
+        settings_file.write_text(
+            json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        # Mask key in output
+        display_val = ("sk-..." + value[-4:]) if "key" in key and len(value) > 8 else value
+        display.show_info(f"Saved: {key} = {display_val}")
+        display.show_info("Restart agentq or start a new solve for changes to take effect.")
+        return False
+
+    # /settings — show all current settings
+    _KEY_GROUPS = [
+        ("API Keys",     ["openai_api_key", "anthropic_api_key", "google_api_key"]),
+        ("Models",       ["default_model", "fast_model", "reasoning_model", "fallback_model"]),
+        ("Agent",        ["max_iterations", "max_cost_per_challenge", "streaming", "temperature", "max_tokens"]),
+        ("Timeouts",     ["shell_timeout", "python_timeout", "network_timeout"]),
+        ("Sandbox",      ["sandbox_mode", "docker_image", "docker_mem"]),
+        ("Logging",      ["log_level"]),
+    ]
+
+    display.console.print(f"\n  [bold]Settings[/bold]  [dim]{settings_file}[/dim]\n")
+
+    for group_name, keys in _KEY_GROUPS:
+        group_vals = {k: settings[k] for k in keys if k in settings}
+        if not group_vals:
+            continue
+        table = Table(title=group_name, show_header=False, box=None, padding=(0, 2))
+        table.add_column("Key", style="cyan", min_width=28)
+        table.add_column("Value")
+        for k, v in group_vals.items():
+            if "key" in k and isinstance(v, str) and len(v) > 8:
+                display_v = v[:8] + "..." + v[-4:]
+            else:
+                display_v = str(v)
+            table.add_row(k, display_v)
+        display.console.print(table)
+        display.console.print()
+
+    display.console.print(
+        "  [dim]Set a value: /settings <key> <value>[/dim]\n"
+        "  [dim]Example:    /settings openai_api_key sk-...[/dim]\n"
     )
     return False
 

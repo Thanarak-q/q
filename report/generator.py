@@ -255,7 +255,7 @@ def save_report(
     Returns:
         Path to the saved report file.
     """
-    dest = report_dir or Path("reports")
+    dest = report_dir or (Path.home() / ".q" / "reports")
     dest.mkdir(parents=True, exist_ok=True)
     fpath = dest / f"{session_id}.md"
     fpath.write_text(report_md, encoding="utf-8")

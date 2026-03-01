@@ -30,13 +30,6 @@ ENV/
 env.bak/
 venv.bak/
 
-# Environment Variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
 # IDEs
 .idea/
 .vscode/

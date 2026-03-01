@@ -14,6 +14,7 @@ from utils.file_detector import detect_file_type
 from utils.logger import get_logger
 
 _MAX_READ_SIZE = 100_000  # 100 KB text read limit
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
 
 
 class FileManagerTool(BaseTool):
@@ -56,6 +57,11 @@ class FileManagerTool(BaseTool):
             workspace: Host-side workspace directory.
             docker_manager: Optional DockerSandbox instance.
         """
+        from config import load_config as _load_config
+        _cfg = _load_config()
+        self._ocr_cfg = _cfg.ocr
+        self._api_key = _cfg.model.api_key
+
         self._workspace = workspace or Path.cwd()
         self._docker = docker_manager
         self._log = get_logger()
@@ -114,6 +120,24 @@ class FileManagerTool(BaseTool):
             return f"[ERROR] File not found: {rel_path}"
         if not fpath.is_file():
             return f"[ERROR] Not a regular file: {rel_path}"
+
+        # Auto-OCR image files via GPT vision
+        if self._ocr_cfg.enabled and fpath.suffix.lower() in _IMAGE_EXTS:
+            try:
+                from utils.ocr import analyze_image
+                img_bytes = fpath.read_bytes()
+                ocr_text = analyze_image(
+                    img_bytes,
+                    self._api_key,
+                    self._ocr_cfg.model,
+                    self._ocr_cfg.max_tokens,
+                )
+                if ocr_text:
+                    return f"[Image: {rel_path}]\n[Vision Analysis]\n{ocr_text}"
+                return f"[Image: {rel_path}]\n[Vision Analysis: No readable text detected]"
+            except Exception as exc:
+                self._log.warning(f"OCR failed for {rel_path}: {exc}")
+                return f"[Image: {rel_path}] (OCR unavailable: {exc})"
 
         try:
             data = fpath.read_bytes()

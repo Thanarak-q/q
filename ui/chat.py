@@ -75,6 +75,10 @@ class ChatState:
     # Orchestrator reference for /rewind command
     _rewind_orchestrator: Any = None
 
+    # Team mode
+    team_mode: bool = False
+    _team_leader: Any = None
+
 
 # ------------------------------------------------------------------
 # Chat UI callback implementation — tree-structured output
@@ -436,6 +440,10 @@ def run_solve(
     watch_mode: bool = False,
 ) -> SolveResult | None:
     """Run the solve pipeline for a challenge description."""
+    # --- Team mode: delegate to TeamLeader ---
+    if state.team_mode:
+        return _run_team_solve(description, state, display, callbacks)
+
     # Shared cost tracker across session
     if state.session_cost_tracker is None:
         state.session_cost_tracker = CostTracker(
@@ -592,6 +600,134 @@ def run_solve(
 
 
 # ------------------------------------------------------------------
+# Team solve
+# ------------------------------------------------------------------
+
+
+def _run_team_solve(
+    description: str,
+    state: ChatState,
+    display: Display,
+    callbacks: ChatCallbacks,
+) -> SolveResult | None:
+    """Run team-based solve using TeamLeader."""
+    from agent.team.leader import TeamLeader
+
+    if state.solving:
+        display.show_error("Already solving. Wait or Ctrl+C to stop.")
+        return None
+
+    state.solving = True
+    callbacks.reset_for_new_solve()
+
+    # Classify category for team preset selection
+    category = state.forced_category or "misc"
+    if not state.forced_category:
+        try:
+            from agent.classifier import classify_challenge
+            result = classify_challenge(description, state.config)
+            category = result.get("category", "misc")
+        except Exception:
+            pass
+
+    display.show_info(f"Team mode: assembling {category} team...")
+
+    leader = TeamLeader(
+        config=state.config,
+        callbacks=callbacks,
+        docker_manager=state.docker_manager,
+        workspace=state.workspace,
+    )
+    state._team_leader = leader
+
+    # Set up Ctrl+C handler
+    import signal
+    original_handler = signal.getsignal(signal.SIGINT)
+    _last_ctrl_c: list[float] = [0.0]
+
+    def cancel_handler(signum, frame):
+        now = time.time()
+        if now - _last_ctrl_c[0] < 2.0:
+            display.console.print("\n  [warning]Exiting...[/warning]")
+            signal.signal(signal.SIGINT, original_handler)
+            raise KeyboardInterrupt
+        _last_ctrl_c[0] = now
+        display.console.print("\n  [warning]Stopping team...[/warning]")
+        leader.cancel()
+
+    signal.signal(signal.SIGINT, cancel_handler)
+
+    spinner = PhaseSpinner(display.console)
+    result = None
+    try:
+        with spinner:
+            callbacks.set_spinner(spinner)
+            result = leader.solve_with_team(
+                description=description,
+                category=category,
+                files=state.pending_files or None,
+                target_url=state.pending_url,
+                flag_pattern=state.flag_pattern,
+            )
+    except KeyboardInterrupt:
+        display.show_error("Team interrupted.")
+        result = None
+    finally:
+        callbacks.set_spinner(None)
+        signal.signal(signal.SIGINT, original_handler)
+        state.solving = False
+        state.pending_files = []
+        state.pending_url = None
+        state.forced_category = None
+        state._team_leader = None
+
+    if result:
+        if callbacks._found_flag:
+            display.show_flag_result(
+                flag=callbacks._found_flag,
+                steps=result.iterations,
+                tokens=result.total_tokens,
+                cost=result.cost_usd,
+                answer=callbacks._found_answer,
+            )
+        elif not result.success:
+            if callbacks._found_answer:
+                display.show_answer(
+                    callbacks._found_answer, callbacks._answer_confidence
+                )
+            display.show_fail_result(
+                steps=result.iterations,
+                tokens=result.total_tokens,
+                cost=result.cost_usd,
+            )
+        else:
+            if callbacks._found_answer:
+                display.show_answer(
+                    callbacks._found_answer, callbacks._answer_confidence
+                )
+            display.show_done(result.iterations, result.total_tokens, result.cost_usd)
+
+        # Show team summary
+        if result.summary:
+            display.console.print(f"\n[dim]{result.summary}[/dim]")
+
+        state.solve_history.append({
+            "description": description[:80],
+            "status": "solved" if result.success else "failed",
+            "flags": result.flags,
+            "category": result.category,
+            "iterations": result.iterations,
+            "cost": result.cost_usd,
+            "session_id": result.session_id,
+            "team": True,
+        })
+        state.total_session_cost += result.cost_usd
+        state.last_session_id = result.session_id
+
+    return result
+
+
+# ------------------------------------------------------------------
 # Main chat loop
 # ------------------------------------------------------------------
 
@@ -601,6 +737,7 @@ def chat_loop(
     repo_path: str | None = None,
     config_path: str | None = None,
     watch: bool = False,
+    team: bool = False,
 ) -> None:
     """Run the main interactive chat loop.
 
@@ -608,6 +745,7 @@ def chat_loop(
         verbose: Enable verbose output.
         repo_path: Optional path to source code for white-box analysis.
         config_path: Optional path to YAML config file.
+        team: Enable team mode from CLI flag.
     """
     # Load config
     config = load_config()
@@ -616,15 +754,6 @@ def chat_loop(
         log_dir=config.log.log_dir,
         verbose=verbose,
     )
-
-    # Check API key
-    if not config.model.api_key:
-        print(
-            "\nError: OPENAI_API_KEY not set.\n"
-            "Set it in your .env file or environment:\n"
-            "  export OPENAI_API_KEY=sk-...\n"
-        )
-        sys.exit(1)
 
     # Init display and state
     display = Display()
@@ -643,6 +772,7 @@ def chat_loop(
         verbose=verbose or (yaml_config.verbose if yaml_config else False),
         repo_path=repo_path,
         yaml_config_path=config_path,
+        team_mode=team or config.team.enabled,
     )
     callbacks = ChatCallbacks(display, state)
 
@@ -650,12 +780,19 @@ def chat_loop(
     state.docker_manager = setup_docker(config)
     state.sandbox_display = "docker" if state.docker_manager else "local"
 
+    # Detect first run — no API key set
+    _no_key = not config.model.api_key and not config.model.anthropic_api_key
+
     # Minimal welcome banner (after docker so we show the actual mode)
     display.show_banner(
         model=state.current_model,
         sandbox=state.sandbox_display,
         workspace=str(state.workspace),
+        first_run=_no_key,
     )
+
+    if _no_key:
+        display.show_setup_needed()
 
     # Show YAML config info if loaded
     if yaml_config and config_path:
@@ -755,6 +892,13 @@ def chat_loop(
                 continue
 
             elif action["action"] == "solve":
+                # Reload config in case user just set an API key via /settings
+                if not state.config.model.api_key and not state.config.model.anthropic_api_key:
+                    state.config = load_config()
+                    state.current_model = state.config.model.default_model
+                if not state.config.model.api_key and not state.config.model.anthropic_api_key:
+                    display.show_setup_needed()
+                    continue
                 display.console.print()
                 run_solve(action["text"], state, display, callbacks, watch_mode=watch)
 

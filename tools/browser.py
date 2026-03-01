@@ -141,8 +141,11 @@ class BrowserTool(BaseTool):
         # Watch config
         self._vcfg = vision_config or cfg.browser_vision
 
+        # OCR config
+        self._ocr_cfg = cfg.ocr
+
         # Screenshots directory (for manual screenshot/download_image saves)
-        self._screenshots_dir = Path("sessions/screenshots")
+        self._screenshots_dir = Path.home() / ".q" / "sessions" / "screenshots"
         self._screenshots_dir.mkdir(parents=True, exist_ok=True)
         self._screenshot_count = 0
 
@@ -304,10 +307,21 @@ class BrowserTool(BaseTool):
         path = self._screenshots_dir / f"manual_{self._screenshot_count}.png"
         try:
             self._page.screenshot(path=str(path), full_page=False)
-            return (
-                f"Screenshot saved: {path}\n"
-                f"URL: {self._page.url}"
-            )
+            result = f"Screenshot saved: {path}\nURL: {self._page.url}"
+            if self._ocr_cfg.enabled:
+                try:
+                    from utils.ocr import analyze_image
+                    ocr_text = analyze_image(
+                        path.read_bytes(),
+                        load_config().model.api_key,
+                        self._ocr_cfg.model,
+                        self._ocr_cfg.max_tokens,
+                    )
+                    if ocr_text:
+                        result += f"\n\n[Vision Analysis]\n{ocr_text}"
+                except Exception as exc:
+                    self._log.warning(f"OCR failed on screenshot: {exc}")
+            return result
         except Exception as exc:
             return f"[ERROR] Screenshot failed: {exc}"
 
@@ -479,8 +493,18 @@ class BrowserTool(BaseTool):
         path = self._screenshots_dir / f"image_{self._screenshot_count}.{ext}"
         path.write_bytes(img_bytes)
 
-        return (
-            f"Image downloaded: {img_url}\n"
-            f"Saved to: {path}\n"
-            f"Size: {len(img_bytes)} bytes"
-        )
+        result = f"Image downloaded: {img_url}\nSaved to: {path}\nSize: {len(img_bytes)} bytes"
+        if self._ocr_cfg.enabled:
+            try:
+                from utils.ocr import analyze_image
+                ocr_text = analyze_image(
+                    img_bytes,
+                    load_config().model.api_key,
+                    self._ocr_cfg.model,
+                    self._ocr_cfg.max_tokens,
+                )
+                if ocr_text:
+                    result += f"\n\n[Vision Analysis]\n{ocr_text}"
+            except Exception as exc:
+                self._log.warning(f"OCR failed on downloaded image: {exc}")
+        return result
