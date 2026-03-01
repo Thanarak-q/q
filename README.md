@@ -3,7 +3,7 @@
 Q is a green capybara that solves CTF challenges using AI.
 
 Single-agent architecture with skill-based prompts, multi-provider LLM support,
-browser automation, knowledge base learning, hooks system, and performance tracking.
+plan mode, browser automation, knowledge base learning, hooks system, and performance tracking.
 
 ## Setup Guide
 
@@ -60,11 +60,13 @@ Add at least one API key:
 {
   "openai_api_key": "sk-...",
   "anthropic_api_key": "sk-ant-...",
-  "google_api_key": ""
+  "google_api_key": "",
+  "brave_api_key": ""
 }
 ```
 
 > You only need one key. OpenAI is the default provider. See [Multi-Provider Support](#multi-provider-support) to use Claude or Gemini.
+> `brave_api_key` is optional — enables Brave Search for the web_search tool (falls back to DuckDuckGo if not set).
 
 **Where to get keys:**
 - OpenAI → [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
@@ -163,8 +165,11 @@ Type a challenge description to start solving.
 ```bash
 agentq --verbose                    # Show full LLM thinking and tool output
 agentq --watch                      # Live 2x2 dashboard (thinking/tools/tree/stats)
+agentq --team                       # Team mode (multi-agent parallel solving)
+agentq --no-plan                    # Skip plan approval step
 agentq --repo /path/to/src          # White-box analysis mode
 agentq --config config.yaml         # Load YAML config override
+agentq --hooks hooks.yaml           # Load hooks config
 agentq --batch challenges.json      # Batch solve from JSON file
 agentq --benchmark bench.json       # Run benchmark suite
 agentq --sessions                   # List saved sessions
@@ -173,7 +178,6 @@ agentq --replay ID                  # Replay session step-by-step
 agentq --writeup ID                 # Export session as Markdown writeup
 agentq --tools                      # List available tools
 agentq --build                      # Build Docker sandbox image
-agentq --hooks hooks.yaml           # Load hooks config
 agentq --reindex                    # Rebuild RAG vector store
 agentq update                       # Update to latest version
 ```
@@ -183,28 +187,27 @@ agentq update                       # Update to latest version
 | Command | Description |
 |---------|-------------|
 | `/help` | Show all commands |
-| `/stats` | Performance dashboard |
-| `/knowledge` | Knowledge base stats |
-| `/knowledge search X` | Find similar past solves |
-| `/benchmark file.json` | Run benchmark suite |
-| `/resume [id\|latest]` | Resume interrupted session |
-| `/rewind [n\|list]` | Rewind agent to checkpoint N |
-| `/report [id]` | View solve report |
-| `/audit [id]` | View audit log |
-| `/workflow [id]` | Show workflow state history |
+| `/plan [on\|off]` | Toggle plan-before-solve (default: on) |
+| `/team [on\|off]` | Toggle team mode (multi-agent) |
+| `/team tasks` | Show task board |
+| `/team messages` | Show inter-agent message log |
+| `/model [name]` | Show or switch model |
 | `/settings` | Show all settings from `~/.q/settings.json` |
 | `/settings <key> <value>` | Update a setting (e.g. `/settings openai_api_key sk-...`) |
-| `/model [name]` | Switch model mid-solve |
 | `/config` | Show current config |
 | `/config load file.yaml` | Load YAML config |
 | `/repo <path>` | Set source code for white-box analysis |
 | `/file <path>` | Load challenge file |
 | `/url <url>` | Set target URL |
 | `/category [cat]` | Force category |
-| `/verbose [on\|off]` | Toggle verbose output |
+| `/resume [id\|latest]` | Resume interrupted session |
+| `/rewind [n\|list]` | Rewind agent to checkpoint N |
+| `/stats` | Performance dashboard |
 | `/cost` | Show session cost |
 | `/history` | Show solve history |
-| `/sessions` | List saved sessions |
+| `/knowledge` | Knowledge base stats |
+| `/knowledge search X` | Find similar past solves |
+| `/verbose [on\|off]` | Toggle verbose output |
 | `/clear` | Clear screen |
 | `/exit` | Quit |
 
@@ -217,6 +220,7 @@ All settings live in `~/.q/settings.json` — created automatically on install.
   "openai_api_key": "",
   "anthropic_api_key": "",
   "google_api_key": "",
+  "brave_api_key": "",
 
   "default_model": "gpt-4o",
   "fast_model": "gpt-4o-mini",
@@ -226,6 +230,11 @@ All settings live in `~/.q/settings.json` — created automatically on install.
   "temperature": 0.2,
   "max_tokens": 4096,
   "streaming": true,
+
+  "plan_mode": true,
+  "team_enabled": false,
+  "team_max_agents": 2,
+  "team_task_timeout": 300,
 
   "max_iterations": 15,
   "max_cost_per_challenge": 2.00,
@@ -244,9 +253,14 @@ All settings live in `~/.q/settings.json` — created automatically on install.
 | `openai_api_key` | *(required)* | OpenAI API key |
 | `anthropic_api_key` | | Anthropic API key (for Claude models) |
 | `google_api_key` | | Google API key (for Gemini models) |
+| `brave_api_key` | | Brave Search API key (optional, web_search tool) |
 | `default_model` | `gpt-4o` | Default solving model |
 | `fast_model` | `gpt-4o-mini` | Fast model for classification |
 | `reasoning_model` | `o3` | Reasoning model for hard challenges |
+| `plan_mode` | `true` | Show attack plan and wait for approval before solving |
+| `team_enabled` | `false` | Enable multi-agent team mode |
+| `team_max_agents` | `2` | Number of parallel agents in team mode |
+| `team_task_timeout` | `300` | Seconds before a team task times out |
 | `max_iterations` | `15` | Max agent iterations per solve |
 | `max_cost_per_challenge` | `2.00` | Budget cap per challenge (USD) |
 | `sandbox_mode` | `docker` | Execution mode: `docker` or `local` |
@@ -262,13 +276,15 @@ agentq --config target.yaml
 
 Q routes to different LLM providers based on model name prefix:
 
-| Prefix | Provider | Example |
-|--------|----------|---------|
-| `gpt-`, `o3`, `o4` | OpenAI | `gpt-4o`, `o3` |
-| `claude-` | Anthropic | `claude-sonnet-4-5` |
-| `gemini-` | Google | `gemini-2.0-flash` |
+| Prefix | Provider | Example models |
+|--------|----------|----------------|
+| `gpt-`, `o3`, `o4` | OpenAI | `gpt-4o`, `gpt-4o-mini`, `o3` |
+| `claude-` | Anthropic | `claude-sonnet-4-5`, `claude-opus-4` |
+| `gemini-` | Google | `gemini-2.0-flash`, `gemini-2.5-pro` |
 
 Switch model mid-solve: `/model claude-sonnet-4-5`
+
+All three providers are fully implemented with OpenAI-compatible tool calling.
 
 ## Hooks
 
@@ -290,9 +306,68 @@ hooks:
 agentq --hooks configs/hooks.yaml
 ```
 
+## Plan Mode
+
+Before solving, Q classifies the challenge category and generates a step-by-step attack plan. The plan is displayed in a Rich panel and Q pauses for your input:
+
+```
+╭─ Attack Plan  web ───────────────────────────────────────────────╮
+│   1. Inspect login form — look for SQL injection entry points     │
+│   2. Test ' OR 1=1 -- in username field                          │
+│   3. If blocked, try time-based blind SQLi                        │
+│   4. Extract flag from database response                          │
+╰──────────────────────────────────────────────────────────────────╯
+  Enter to solve · type to add notes · 'skip' to skip plan
+  plan>
+```
+
+- **Enter** — approve and solve
+- **Type notes** — notes are appended to the plan before solving
+- **`skip`** — skip the plan, solve immediately without it
+
+Toggle plan mode:
+
+```bash
+agentq --no-plan              # disable for this run
+/plan off                     # disable in session
+/plan on                      # re-enable
+```
+
+Or set permanently in `~/.q/settings.json`: `"plan_mode": false`
+
+## Team Mode
+
+Team mode spawns specialized parallel agents for hard challenges:
+
+```bash
+agentq --team
+/team on
+```
+
+Each category gets a preset team:
+
+| Category | Phase 1 Agent | Phase 2 Agent |
+|----------|--------------|---------------|
+| Web | Recon (enumerate) | Exploit (attack) |
+| Pwn | Analyst (disassemble) | Exploit (rop/shellcode) |
+| Crypto | Analyst (identify) | Solver (implement) |
+| Reverse | Static analyst | Dynamic analyst |
+
+Phase 1 starts immediately. Phase 2 starts as soon as Phase 1 makes a discovery — not after Phase 1 finishes. Agents communicate via a shared TaskBoard and MessageBus.
+
+```bash
+/team tasks      # view task board
+/team messages   # view inter-agent messages
+```
+
+> **Note**: Team mode uses 2× more tokens. Best for genuinely hard challenges where parallel exploration helps. Single-agent mode is faster and cheaper for most challenges.
+
 ## Features
 
-- **Multi-provider LLM** — OpenAI, Anthropic, Google with prefix-based routing
+- **Plan mode** — classify challenge, generate attack plan, pause for user approval before solving
+- **Multi-provider LLM** — OpenAI, Anthropic, Google with prefix-based routing (all fully implemented)
+- **Team mode** — parallel specialized agents (recon + exploit) with event-based phase sync
+- **Web search** — DuckDuckGo (no key) + Brave Search API (optional) for live intelligence
 - **Skill-based solving** — category cheat sheets guide the agent (web, crypto, pwn, rev, forensics, osint, misc)
 - **Checkpoint & rewind** — `/rewind` to any previous agent state (up to 20 checkpoints)
 - **Reflection loop** — agent self-critiques every 3 iterations, auto-pivots on low confidence
@@ -341,6 +416,7 @@ agentq --hooks configs/hooks.yaml
 | `netcat_session` | Raw TCP/UDP persistent sessions |
 | `symbolic` | Formal analysis: checksec, ropper, angr, z3 |
 | `recon` | Web recon, directory brute-force, header analysis |
+| `web_search` | DuckDuckGo (no key) + Brave Search API (optional) |
 | `code_analyzer` | Static code analysis for vulnerabilities |
 | `answer_user` | Provide answers with confidence scores and flags |
 
@@ -393,12 +469,19 @@ ctf-agent/
 │   ├── context_manager.py      # Context window management
 │   ├── hooks.py                # HookEngine (pre/post hooks)
 │   ├── parallel.py             # Parallel approach solving
-│   └── providers/
-│       ├── base.py             # LLMProvider ABC
-│       ├── openai_provider.py  # OpenAI provider
-│       ├── anthropic_provider.py # Anthropic provider
-│       ├── google_provider.py  # Google provider (stub)
-│       └── router.py           # ProviderRouter (prefix-based routing)
+│   ├── providers/
+│   │   ├── base.py             # LLMProvider ABC
+│   │   ├── openai_provider.py  # OpenAI provider
+│   │   ├── anthropic_provider.py # Anthropic provider
+│   │   ├── google_provider.py  # Google Gemini provider
+│   │   └── router.py           # ProviderRouter (prefix-based routing)
+│   └── team/
+│       ├── leader.py           # TeamLeader — coordinates agents
+│       ├── manager.py          # TeamManager
+│       ├── taskboard.py        # Thread-safe TaskBoard (assignee field)
+│       ├── messages.py         # MessageBus (per-agent queues)
+│       ├── roles.py            # TEAM_PRESETS per category
+│       └── callbacks.py        # TeamCallbacks
 ├── tools/
 │   ├── shell.py                # Shell execution
 │   ├── python_exec.py          # Python execution
@@ -410,6 +493,7 @@ ctf-agent/
 │   ├── netcat_session.py       # Raw TCP/UDP sessions
 │   ├── symbolic.py             # checksec / ropper / angr / z3
 │   ├── recon.py                # Web recon
+│   ├── web_search.py           # DuckDuckGo + Brave Search
 │   ├── code_analyzer.py        # Static analysis
 │   ├── answer_user.py          # Answer + flag submission
 │   └── registry.py             # Tool registry + dispatch
@@ -423,9 +507,9 @@ ctf-agent/
 │   ├── procedural.py           # Procedural memory (success chains + anti-patterns)
 │   └── extractor.py            # Auto-extract techniques from solves
 ├── ui/
-│   ├── chat.py                 # Interactive chat loop + callbacks
-│   ├── display.py              # Rich display + welcome screen
-│   ├── commands.py             # Slash command handlers
+│   ├── chat.py                 # Chat loop + plan approval flow
+│   ├── display.py              # Rich display + plan panel
+│   ├── commands.py             # Slash command handlers (/plan, /team, /rewind, ...)
 │   ├── watch.py                # Live 2x2 Rich dashboard
 │   ├── spinner.py              # PhaseSpinner (context-aware verbs)
 │   ├── input_handler.py        # prompt_toolkit input

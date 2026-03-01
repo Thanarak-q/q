@@ -2,348 +2,345 @@
 
 ## Q คืออะไร
 
-Q เป็น AI agent ที่ solve CTF (Capture The Flag) challenges อัตโนมัติ ใช้ OpenAI API เป็น reasoning engine มี CLI interface สไตล์ Claude Code มี mascot เป็น capybara สีเขียว
-
+Q เป็น AI agent ที่ solve CTF (Capture The Flag) challenges อัตโนมัติ
+CLI interface สไตล์ Claude Code มี mascot เป็น capybara สีเขียว
 สร้างโดย q (CS student @ Chiang Mai University, AI Engineer)
 
-## สถานะปัจจุบัน (v0.6.0 — "The Intelligence Update")
+Multi-provider: OpenAI, Anthropic (Claude), Google (Gemini)
 
-### ทำงานได้แล้ว
-- Single agent + skill-based prompts (3 steps, $0.04/challenge)
-- 7 categories: forensics, web, crypto, pwn, reverse, osint, misc
-- Skill files (.md) ใน skills/ — cheat sheets สำหรับแต่ละ category
-- Auto report generation (markdown)
-- Session save/resume
-- Structured audit log (JSONL)
-- Intent classification (find_flag vs answer_question)
-- Flag detection + auto-stop
-- Knowledge base (จำ solves เก่า)
-- Stats dashboard
-- YAML config
-- Benchmark system
-- Green theme CLI + capybara mascot
-- Slash command autocomplete (prompt_toolkit)
-- Input filter (greeting/exit/typo detection)
-- Batch mode, session replay, writeup export
-- Docker sandbox support
+---
 
-### v0.6.0 New Features
-- **Checkpoint & Rewind** — `/rewind [n|list]` to roll back agent state and try different approach
-- **Anti-Soliloquy Guard** — detects when agent claims to see output without running a command, injects warning
-- **Reflection Loop** — auto self-critique every 3 iterations, triggers early pivot on low confidence
-- **Hypothesis-Driven Pivoting** — 5 failure types (TOOL_ERROR, NO_OUTPUT, WRONG_CATEGORY, PARTIAL_PROGRESS, REPEATED_ACTION) with targeted pivot prompts instead of generic escalation
-- **Interactive Agent Tools (IATs)** — persistent gdb, pwntools, and netcat sessions across iterations (inspired by EnIGMA/NYU)
-- **Context-Aware Spinner** — phase-specific status ("Debugging binary...", "Running recon...", etc.) instead of generic "Thinking..."
-- **Persistent Input History** — Ctrl+R search across sessions via `~/.q/history`
+## สถานะปัจจุบัน — v0.9.0
 
-### Known Bugs ที่ต้องแก้
+### Features ที่ทำงานได้แล้ว
 
-**Bug 1: tool_calls response ไม่ครบ (แก้แล้ว?)**
-- OpenAI API error: "tool_calls must be followed by tool messages responding to each tool_call_id"
-- สาเหตุ: model ส่ง parallel tool_calls แต่ code ไม่ตอบกลับทุก tool_call_id
-- ต้องตรวจสอบว่าแก้แล้วจริงหรือยัง
+**Core**
+- Single agent ReAct loop — classify → plan → solve
+- 7 categories: web, crypto, pwn, reverse, forensics, osint, misc
+- Skill files (skills/*.md) — category cheat sheets
+- Checkpoint & rewind (`/rewind`)
+- Anti-soliloquy guard
+- Reflection loop (every 3 iterations)
+- Hypothesis-driven pivoting (5 FailureType)
 
-**Bug 2: Ctrl+C ไม่หยุดจริง (ยังไม่แก้)**
-- กด Ctrl+C แล้ว agent ยังรันต่อ
-- มีหลาย threads ที่ไม่ถูก kill
-- ต้องใช้ global shutdown flag + signal handler ที่ครอบคลุมทุก thread
-- Ctrl+C 1 ครั้ง → graceful stop
-- Ctrl+C 2 ครั้ง → force stop
-- Ctrl+C 3 ครั้ง → os._exit(1)
+**Plan Mode (v0.9.0)**
+- Classify + create attack plan before solve
+- Show plan in Rich panel, pause for user approval
+- User can approve (Enter), add notes, or skip
+- `/plan on|off` toggle, `--no-plan` flag, `plan_mode` in settings.json
 
-**Bug 3: Agent spawn ซ้อนกัน (ยังไม่แก้)**
-- Agent รัน 3 instances ซ้อน — เห็น 3 plans, 3 solve loops พร้อมกัน
-- สาเหตุ: Ctrl+C ไม่หยุด agent เดิม → input loop สร้างใหม่ทับ
-- ต้องเพิ่ม solve lock — ห้าม spawn agent ใหม่ถ้ายัง solve อยู่
+**Multi-Provider (v0.8.0)**
+- OpenAI: gpt-4o, gpt-4o-mini, o3 (prefix: `gpt-`, `o3`, `o4`)
+- Anthropic: claude-* (prefix: `claude-`)
+- Google: gemini-* (prefix: `gemini-`) — fully implemented
+- `ProviderRouter` — prefix-based routing
+- `LLMProvider` ABC — all providers implement same interface
 
-### วิธีหา root cause ของ Bug 2+3
-```bash
-grep -rn "Thread\|ThreadPool\|executor\|asyncio.gather\|asyncio.create_task\|concurrent" agent/ --include="*.py"
-grep -rn "signal\|SIGINT\|KeyboardInterrupt" agent/ --include="*.py"
-grep -rn "Orchestrator\|solve(" agent/ --include="*.py"
-```
+**Team Mode (v0.8.0+)**
+- `--team` flag or `/team on` to enable
+- Specialized role presets per category (web: recon+exploit, pwn: analyst+exploit, etc.)
+- Tasks pre-assigned to specific agents (no work-stealing)
+- Truly parallel: phase 2 starts immediately, waits on `first_discovery_event`
+- Monitor loop sets event on first discovery from phase 1
+- MessageBus for inter-agent communication
+- TaskBoard with `assignee` field + `list_available(for_agent=)`
+
+**Hooks (v0.8.0)**
+- YAML-configured pre/post hooks
+- `pre_tool_call`: regex pattern blocking
+- `post_flag`, `post_solve`: shell commands
+- `--hooks` flag or auto-load from `configs/hooks.yaml`
+
+**Tools (12 registered)**
+- shell, python_exec, file_manager, network, browser (Playwright)
+- debugger (GDB/pexpect IAT), pwntools_session IAT, netcat_session IAT
+- recon (nmap/gobuster/nikto/whatweb), code_analyzer, symbolic (angr/z3/ropper/checksec)
+- **web_search** — DuckDuckGo (no key) + Brave Search API (optional `brave_api_key`)
+- answer_user
+
+**Intelligence**
+- RAG over writeups (ChromaDB + sentence-transformers, optional)
+- Procedural memory — learns success chains + anti-patterns
+- ErrorAnalyzer — pattern matching, failure tracking, suggestions
+- EvidenceTracker — anti-hallucination
+- ContextManager — auto-summary at 80% window
+
+**UI**
+- PhaseSpinner (15 phase verbs)
+- Watch mode (`--watch`) — Rich Live 2x2 dashboard
+- Streaming output (token-by-token)
+- `/rewind [n|list]` command
+- Persistent input history (`~/.q/history`)
+- TaskTree ANSI renderer
+
+---
 
 ## Architecture
 
 ```
-User Input → Input Filter → Classifier (category + intent)
-                                ↓
-                          Single Agent (orchestrator.py)
-                                ↓
-                          Reads skill .md file
-                          (skills/forensics.md, web.md, etc.)
-                                ↓
-                    ┌─── ReAct Loop (per iteration) ───┐
-                    │                                   │
-                    │  Think → Act → Observe → Reflect  │
-                    │         ↓                         │
-                    │  Anti-Soliloquy Guard              │
-                    │  (blocks hallucinated observations) │
-                    │         ↓                         │
-                    │  Checkpoint (saved before each     │
-                    │  tool call, /rewind to restore)    │
-                    │         ↓                         │
-                    │  Tool execution:                   │
-                    │  shell, python, file, network,     │
-                    │  browser, debugger, pwntools,      │
-                    │  netcat (IATs — persistent)        │
-                    │         ↓                         │
-                    │  Every 3 iters: Reflection Check   │
-                    │  (confidence LOW → early pivot)    │
-                    │         ↓                         │
-                    │  Hypothesis-Driven Pivot if stuck  │
-                    │  (5 failure types → targeted fix)  │
-                    └───────────────────────────────────┘
-                                ↓
-                          Evidence Tracker (anti-hallucination)
-                                ↓
-                          Knowledge Base (learns from past solves)
-                                ↓
-                          Auto Report + Stats + Audit Log
+User Input
+    │
+    ▼
+Input Filter (greetings/typos/clarify)
+    │
+    ▼ [plan_mode=True]
+Plan Phase ──→ classify_challenge() + create_plan()
+    │          Show Rich panel, prompt user approval
+    │          User: Enter / notes / skip
+    ▼
+run_solve()
+    │
+    ├─[team_mode] TeamLeader.solve_with_team()
+    │               ├── Phase 1 agent thread (starts immediately)
+    │               ├── Phase 2 agent thread (waits first_discovery_event)
+    │               ├── Monitor loop (flag detection, event signalling)
+    │               └── MessageBus + TaskBoard coordination
+    │
+    └─[single]  Orchestrator.solve()
+                    ├── Phase 1: Classify (fast model)
+                    ├── Phase 2: Plan (forced_plan if user approved)
+                    ├── Phase 3: Build system prompt + skill file
+                    └── ReAct Loop:
+                            Think → Act → Observe
+                            │
+                            ├── Anti-soliloquy guard
+                            ├── Checkpoint (before each tool call)
+                            ├── ErrorAnalyzer (diagnose failures)
+                            ├── Every 3 iters: Reflection
+                            ├── Low confidence → Hypothesis pivot
+                            └── Flag found → answer_user()
 ```
+
+---
 
 ## Project Structure
 
 ```
 ctf-agent/
+├── main.py                      # CLI entry point
+├── config.py                    # AppConfig + all sub-configs
+├── install.sh                   # One-line installer (runtime Python detection)
+├── requirements.txt
+│
 ├── agent/
-│   ├── orchestrator.py      # Main agent loop — CORE FILE
-│   ├── parallel.py          # Parallel approach solving
-│   ├── classifier.py        # Category + intent classification
-│   ├── planner.py           # Attack planning + hypothesis-driven pivoting (FailureType)
-│   └── context_manager.py   # Context window management
-├── skills/                  # Skill files — category cheat sheets
-│   ├── SKILL.md             # Core rules + thinking protocol
-│   ├── forensics.md         # PCAP, stego, memory, disk
-│   ├── web.md               # SQLi, XSS, SSTI, LFI, SSRF, JWT
-│   ├── crypto.md            # RSA, AES, classical ciphers
-│   ├── pwn.md               # Buffer overflow, ROP, format string
-│   ├── reverse.md           # Ghidra, Z3, decompilers
-│   ├── osint.md             # Username, image, domain recon
-│   └── misc.md              # Encoding, jail escape, scripting
+│   ├── orchestrator.py          # CORE — ReAct loop, checkpoints, reflection
+│   ├── classifier.py            # Category + intent classification
+│   ├── planner.py               # Attack planning + FailureType pivoting
+│   ├── context_manager.py       # Context window management
+│   ├── parallel.py              # Parallel approach solving
+│   ├── hooks.py                 # HookEngine (pre/post hooks)
+│   ├── providers/
+│   │   ├── base.py              # LLMProvider ABC + SimpleUsage
+│   │   ├── openai_provider.py   # OpenAI (pass-through)
+│   │   ├── anthropic_provider.py# Anthropic (format translation)
+│   │   ├── google_provider.py   # Google Gemini (format translation)
+│   │   └── router.py            # ProviderRouter (prefix routing)
+│   └── team/
+│       ├── leader.py            # TeamLeader — coordinates agents
+│       ├── manager.py           # TeamManager
+│       ├── taskboard.py         # Thread-safe TaskBoard (assignee field)
+│       ├── messages.py          # MessageBus (per-agent queues)
+│       ├── roles.py             # TEAM_PRESETS per category
+│       └── callbacks.py         # TeamCallbacks (forwards to lead)
+│
 ├── tools/
-│   ├── registry.py          # ToolRegistry with function calling schemas
-│   ├── shell.py             # Shell command execution
-│   ├── python_exec.py       # Python code execution
-│   ├── file_manager.py      # File read/write/list
-│   ├── network.py           # Network tools
-│   ├── browser.py           # Playwright browser automation
-│   ├── debugger.py          # GDB wrapper via pexpect (IAT) — v0.6.0
-│   ├── pwntools_session.py  # Persistent pwntools connection (IAT) — v0.6.0
-│   ├── netcat_session.py    # Raw TCP/UDP sessions (IAT) — v0.6.0
-│   ├── recon.py             # nmap, whatweb, gobuster, nikto
-│   ├── code_analyzer.py     # White-box source code analysis
-│   ├── error_analyzer.py    # Error detection + adaptation
-│   ├── output_summarizer.py # Summarize long outputs
-│   ├── evidence_tracker.py  # Track what data came from tools
-│   ├── response_parser.py   # Parse LLM responses
-│   ├── web_state.py         # Web session state tracking
-│   ├── answer_user.py       # User answer submission
-│   ├── submit_deliverable.py # Pipeline agent completion signal
-│   ├── capybara_generator.py # Mascot generation
-│   └── base.py              # Base tool class
-├── prompts/
-│   ├── system.py            # System prompt builder
-│   └── strategies.py        # Strategy/approach prompts
-├── knowledge/
-│   ├── base.py              # Knowledge base (past solves)
-│   ├── extractor.py         # Auto-extract techniques from solves
-│   └── exploit_templates.py # Pre-built exploit payloads
-├── config_yaml/
-│   └── loader.py            # YAML config loader
-├── configs/
-│   └── example.yaml         # Example config file
-├── utils/
-│   ├── token_counter.py     # Token counting
-│   ├── cost_tracker.py      # API cost tracking
-│   ├── session_manager.py   # Session save/load/resume
-│   ├── audit_log.py         # Structured audit logging
-│   ├── logger.py            # Logging setup
-│   ├── flag_extractor.py    # Flag pattern extraction
-│   ├── file_detector.py     # File type detection
-│   └── dashboard.py         # Stats dashboard display
-├── stats/
-│   └── tracker.py           # Performance stats
-├── benchmark/
-│   ├── runner.py            # Benchmark runner
-│   ├── check.py             # CI quality gates
-│   └── challenges.json      # Test challenges
-├── sandbox/
-│   ├── docker_manager.py    # Docker sandbox management
-│   └── Dockerfile           # Sandbox image definition
-├── report/
-│   └── generator.py         # Markdown report generator
+│   ├── registry.py              # ToolRegistry — register + dispatch
+│   ├── base.py                  # BaseTool + ToolParameter + ToolResult
+│   ├── shell.py                 # Shell execution
+│   ├── python_exec.py           # Python execution
+│   ├── file_manager.py          # File ops + auto-OCR
+│   ├── network.py               # HTTP + TCP
+│   ├── browser.py               # Playwright browser
+│   ├── debugger.py              # GDB via pexpect (IAT)
+│   ├── pwntools_session.py      # Persistent pwntools (IAT)
+│   ├── netcat_session.py        # Raw TCP/UDP (IAT)
+│   ├── recon.py                 # nmap/gobuster/nikto/whatweb/subfinder
+│   ├── symbolic.py              # checksec/ropper/angr/z3 (lazy imports)
+│   ├── web_search.py            # DuckDuckGo + Brave Search
+│   ├── code_analyzer.py         # White-box static analysis
+│   ├── error_analyzer.py        # Error detection + suggestions
+│   ├── evidence_tracker.py      # Anti-hallucination
+│   └── answer_user.py           # Final answer + flag submission
+│
+├── skills/                      # Category cheat sheets (read by agent)
+│   ├── SKILL.md                 # Core rules + thinking protocol
+│   ├── web.md / crypto.md / pwn.md / reverse.md
+│   └── forensics.md / osint.md / misc.md
+│
 ├── ui/
-│   ├── chat.py              # Chat loop + callbacks + PhaseSpinner integration
-│   ├── display.py           # Output formatting, VERSION
-│   ├── commands.py          # Slash command handlers (includes /rewind)
-│   ├── input_handler.py     # prompt_toolkit input + persistent history (~/.q/history)
-│   ├── input_filter.py      # Greeting/exit/typo filter
-│   ├── tree.py              # TaskTree renderer (ANSI)
-│   ├── mascot.py            # Capybara ASCII art
-│   └── spinner.py           # PhaseSpinner with 15 context-aware verbs
-├── logs/                    # Session logs
-├── reports/                 # Generated solve reports
-├── sessions/                # Saved sessions
-├── main.py                  # Entry point
-├── config.py                # App config/constants
-└── requirements.txt
+│   ├── chat.py                  # Chat loop + ChatState + run_solve()
+│   ├── display.py               # Rich display (show_plan, show_flag, etc.)
+│   ├── commands.py              # Slash handlers (/plan, /team, /rewind, ...)
+│   ├── watch.py                 # WatchDisplay — Rich Live 2x2 dashboard
+│   ├── spinner.py               # PhaseSpinner (15 verbs)
+│   ├── input_handler.py         # prompt_toolkit + ~/.q/history
+│   ├── input_filter.py          # Greeting/exit/clarify filter
+│   ├── tree.py                  # TaskTree ANSI renderer
+│   └── mascot.py                # Capybara ASCII art
+│
+├── knowledge/
+│   ├── base.py                  # KnowledgeBase (JSON + keyword)
+│   ├── embeddings.py            # RAG via ChromaDB + sentence-transformers
+│   ├── procedural.py            # Procedural memory (success chains)
+│   └── extractor.py             # Auto-extract techniques from solves
+│
+├── prompts/
+│   ├── system.py                # System prompt builder + scope lock
+│   └── strategies.py            # Pivot prompts
+│
+├── utils/
+│   ├── cost_tracker.py          # Token/cost tracking + budget cap
+│   ├── session_manager.py       # Session save/load/resume
+│   ├── audit_log.py             # Structured audit logging (JSONL)
+│   ├── flag_extractor.py        # Flag pattern matching + false-positive filter
+│   ├── ocr.py                   # GPT vision auto-OCR
+│   └── logger.py                # Logging setup
+│
+├── benchmark/                   # runner.py, check.py, challenges.json
+├── report/generator.py          # Markdown report generation
+├── stats/tracker.py             # Performance stats
+├── sandbox/                     # docker_manager.py + Dockerfile
+├── configs/                     # example.yaml, hooks.yaml
+└── config_yaml/loader.py        # YAML config loader
 ```
+
+---
+
+## Config — ~/.q/settings.json
+
+All settings live in `~/.q/settings.json`:
+
+```json
+{
+  "openai_api_key": "sk-...",
+  "anthropic_api_key": "sk-ant-...",
+  "google_api_key": "AIza...",
+  "brave_api_key": "BSA...",
+
+  "default_model": "gpt-4o",
+  "fast_model": "gpt-4o-mini",
+  "reasoning_model": "o3",
+  "fallback_model": "",
+
+  "plan_mode": true,
+  "team_enabled": false,
+  "team_max_agents": 2,
+  "team_task_timeout": 300,
+
+  "max_iterations": 15,
+  "max_cost_per_challenge": 2.00,
+  "streaming": true,
+  "sandbox_mode": "docker",
+  "log_level": "INFO"
+}
+```
+
+---
 
 ## Key Design Principles
 
-### "Be Lazy" Philosophy
-Q ออกแบบมาให้ solve ใน 3-6 steps ไม่ใช่ 20+ steps
+**Be Lazy** — solve in 3-6 steps, not 20+
 - Run 1-2 commands → form hypothesis → verify → answer
-- ห้ามรัน command "just to see what happens"
-- Wrong answer is worse than no answer
+- Never run a command "just to see what happens"
 
-### Thinking Protocol
-Agent ต้องใช้ <think> tags ก่อนทุก action:
+**Thinking Protocol** — `<think>` tags before every action
 - First step: GOAL, PLAN, SCOPE, DONE WHEN
 - Every step: LEARNED, HYPOTHESIS, NEXT, DONE?
-- ถ้า DONE? = yes → stop immediately
+- DONE? = yes → stop immediately
 
-### No Evidence, No Answer
-ห้ามตอบสิ่งที่ไม่มี evidence จาก tool output
-ทุก claim ต้อง trace กลับไปหา tool output ได้
+**No Evidence, No Answer** — every claim must trace to tool output
 
-### Observe → Hypothesize → Test
-ทุก step ต้องตาม cycle:
-OBSERVE (output) → HYPOTHESIZE (vulnerability) → TEST (command) → CONCLUDE
+**Observe → Hypothesize → Test**
 
-## Model Configuration
-
-Default models (configurable via env vars):
-- `FAST_MODEL`: gpt-4o-mini (classification, reports)
-- `DEFAULT_MODEL`: gpt-4o (main solving)
-- `REASONING_MODEL`: o3 (hard challenges)
-
-Pricing tracked for: gpt-4o, gpt-4o-mini, o3, o3-mini, gpt-4-turbo
-
-## Performance History
-
-| Version | Steps | Tokens | Cost | Accuracy |
-|---------|-------|--------|------|----------|
-| v0.1 single agent | 34 | 258k | $0.67 | wrong |
-| v0.2 bug fixes | ~15 | 21k | $0.05 | correct |
-| v0.3 multi-agent | 19 | 73k | $0.19 | wrong (agents didn't share data) |
-| v0.4 skill-based | **3** | **13.6k** | **$0.04** | correct |
-
-**Key lesson: Simple > Complex.** Multi-agent pipeline made Q WORSE. Single agent + good skill prompts = best results.
-
-## Roadmap / TODO
-
-See `ROADMAP.md` for detailed plans.
-
-### Done in v0.6.0
-1. ~~Checkpoint & Rewind~~ (/rewind command)
-2. ~~Anti-Soliloquy Guard~~ (blocks hallucinated observations)
-3. ~~Interactive Agent Tools~~ (debugger, pwntools, netcat)
-4. ~~Context-Aware Spinner~~ (15 phase verbs)
-5. ~~Persistent Input History~~ (~/.q/history)
-6. ~~Reflection Loop~~ (self-critique every 3 iterations)
-7. ~~Hypothesis-Driven Pivoting~~ (5 failure types)
-
-### Remaining Bug Fixes
-1. ~~tool_calls response ไม่ครบ~~ (ตรวจสอบว่าแก้แล้ว)
-2. Ctrl+C ไม่หยุดจริง + agent spawn ซ้อน
-3. Output ซ้ำหลายบรรทัดหลัง Ctrl+C
-
-### v0.7.0 — "The Memory Update" (planned)
-1. RAG over CTF writeups (Chroma DB + sentence-transformers)
-2. Procedural memory (learned technique chains)
-3. Streaming output (token-by-token display)
-4. Watch mode (Rich Live multi-panel display)
-
-### v0.8.0 — "The Platform Update" (planned)
-1. Multi-provider support (Claude, Gemini, OpenAI)
-2. Hooks system (pre/post tool call, auto-submit flags)
-3. Symbolic verification layer (angr, z3)
-
-### Priority: GitHub Release
-1. Professional README + GIF demo
-2. Benchmark กับ real CTF platforms (picoCTF, HackTheBox)
-3. Sample solve reports
-
-## Commands Reference
-
-```
-/help          All commands
-/stats         Performance dashboard
-/benchmark     Run benchmark
-/config        Show/edit config
-/model         Switch AI model
-/knowledge     Knowledge base
-/resume        Resume session
-/report        View report
-/audit         Audit log
-/repo <path>   Set source code for white-box
-/rewind [n]    Rewind agent state by n steps (v0.6.0)
-/rewind list   Show all checkpoints (v0.6.0)
-/verbose       Toggle verbose
-/cost          Session cost
-/exit          Quit
-```
-
-## Running
-
-```bash
-cd ctf-agent
-pip install -r requirements.txt
-
-# Set API key
-export OPENAI_API_KEY=your_key
-
-# Run (interactive chat mode — default)
-python3 main.py
-
-# With options
-python3 main.py --verbose          # Full LLM thinking + tool output
-python3 main.py --config configs/my-config.yaml
-python3 main.py --repo /path/to/app # White-box analysis
-
-# Batch/utility commands
-python3 main.py --batch challenges.json     # Solve multiple challenges
-python3 main.py --benchmark bench.json      # Run benchmark
-python3 main.py --sessions                  # List saved sessions
-python3 main.py --replay SESSION_ID         # Replay session
-python3 main.py --resume SESSION_ID         # Resume paused/failed session
-python3 main.py --writeup SESSION_ID -o out.md  # Export writeup
-python3 main.py --build                     # Build Docker sandbox
-python3 main.py --tools                     # List available tools
-```
-
-## Style Guide
-
-- Mascot: Green capybara (ASCII art in welcome screen)
-- Tone: Casual, bro-style ("bro help me find the flag")
-- Language: Code in English, comments can be Thai
-- Agent output: Clean, minimal — show step progress with tree-style
+---
 
 ## When Making Changes
 
-- **แก้ skill files** → test กับ challenge จริงว่า agent ยัง solve ได้
-- **แก้ orchestrator** → ตรวจสอบ messages array ว่า tool_calls มี response ครบ
-- **เพิ่ม tool ใหม่** → register ใน ToolRegistry (tools/registry.py)
-- **แก้ UI** → test ทั้ง normal flow, Ctrl+C, error cases
-- **Benchmark** → รัน python3 main.py --benchmark benchmark/challenges.json ก่อน commit
+- **Add tool** → implement `BaseTool`, register in `ToolRegistry.__init__()`, update `web_search.py` pattern if it's a search-like tool
+- **Add slash command** → add to `COMMANDS` dict and handler function in `commands.py`, add to help string
+- **Add provider** → implement `LLMProvider` ABC in `agent/providers/`, add prefix in `router.py`
+- **Add team preset** → add to `TEAM_PRESETS` dict in `agent/team/roles.py`
+- **Change skill** → test against real challenge — agent reads skill files verbatim
+- **Change orchestrator** → verify messages array: every tool_call must have a matching tool response
+- **Before commit** → `python3 -m py_compile <changed files>` + `python3 main.py --tools`
+
+---
+
+## CLI Reference
+
+```bash
+agentq                          # Interactive mode (default)
+agentq --verbose                # Full LLM output
+agentq --watch                  # Live 2x2 dashboard
+agentq --team                   # Team mode (multi-agent)
+agentq --no-plan                # Skip plan approval step
+agentq --repo /path/to/src      # White-box mode
+agentq --config config.yaml     # YAML config override
+agentq --hooks hooks.yaml       # Load hooks config
+agentq --batch challenges.json  # Batch solve
+agentq --benchmark bench.json   # Benchmark suite
+agentq --sessions               # List sessions
+agentq --resume ID              # Resume session
+agentq --replay ID              # Replay session
+agentq --writeup ID             # Export Markdown writeup
+agentq --tools                  # List tools
+agentq --build                  # Build Docker sandbox
+agentq --reindex                # Rebuild RAG vector store
+agentq update                   # Pull latest + reinstall deps
+```
+
+## Slash Commands
+
+```
+/help                    All commands
+/plan [on|off]           Toggle plan-before-solve (default: on)
+/team [on|off]           Toggle team mode
+/team tasks              Show task board
+/team messages           Show message log
+/model [name]            Show or switch model
+/settings [key value]    View/update settings.json
+/config [load file]      Show or load YAML config
+/repo <path>             Set source code for white-box
+/file <path>             Load challenge file
+/url <url>               Set target URL
+/category [cat]          Force category
+/rewind [n|list]         Rewind to checkpoint N
+/resume [id|latest]      Resume session
+/stats                   Performance dashboard
+/cost                    Session token/cost summary
+/history                 Solve history
+/knowledge [search X]    Knowledge base
+/verbose [on|off]        Toggle verbose
+/clear                   Clear screen
+/exit                    Quit
+```
+
+---
+
+## Performance History
+
+| Version | Steps | Tokens | Cost | Result |
+|---------|-------|--------|------|--------|
+| v0.1 single agent | 34 | 258k | $0.67 | wrong |
+| v0.2 bug fixes | ~15 | 21k | $0.05 | correct |
+| v0.3 multi-agent | 19 | 73k | $0.19 | wrong |
+| v0.4 skill-based | **3** | **13.6k** | **$0.04** | correct |
+
+**Key lesson**: Multi-agent pipeline made Q WORSE.
+Single agent + good skill prompts = best results.
+Team mode is for parallelism on hard challenges, not default.
+
+---
 
 ## Tech Stack
 
-- Python 3.11+
-- OpenAI API (gpt-4o / gpt-4o-mini / o3)
+- Python 3.10+
+- OpenAI SDK, Anthropic SDK, google-generativeai
 - Playwright (browser automation)
-- pexpect (IAT: persistent gdb/pwntools sessions)
-- prompt_toolkit (CLI input + persistent history)
+- pexpect (IAT: persistent gdb/pwntools)
+- prompt_toolkit (CLI input + history)
+- Rich (terminal UI)
 - PyYAML (config)
-- Rich (terminal output)
-
-## Context from Development Sessions
-
-Q ถูกพัฒนาผ่าน 3 sessions หลัก:
-1. Initial build — architecture, basic agent, UI
-2. Refactor — multi-agent (failed) → single agent + skills (success)
-3. Polish — features (benchmark, knowledge base, stats, browser, config)
-
-Core insight: **ให้ model ทำงานน้อยที่สุดแต่ฉลาดที่สุด** ผ่าน skill files ที่บอกตรงๆ ว่า "เจอ pcap → tshark -q -z conv,ip ก่อน" ไม่ต้องคิดเอง
+- ChromaDB + sentence-transformers (optional RAG)
+- angr, z3-solver, ropper (optional symbolic)
+- requests (web_search)
