@@ -88,6 +88,14 @@ class PipelineConfig:
 
 
 @dataclass(frozen=True)
+class TeamConfig:
+    enabled: bool = False
+    max_agents: int = 2
+    budget_multiplier: float = 2.0
+    task_timeout: int = 120
+
+
+@dataclass(frozen=True)
 class OcrConfig:
     enabled: bool = True
     model: str = "gpt-4o-mini"
@@ -104,6 +112,7 @@ class AppConfig:
     pipeline: PipelineConfig = None
     browser_vision: BrowserVisionConfig = None
     ocr: OcrConfig = None
+    team: TeamConfig = None
     sandbox_mode: str = "docker"
 
     def __post_init__(self):
@@ -117,6 +126,7 @@ class AppConfig:
             ("pipeline", PipelineConfig()),
             ("browser_vision", BrowserVisionConfig()),
             ("ocr", OcrConfig()),
+            ("team", TeamConfig()),
         ]:
             if getattr(self, field_name) is None:
                 object.__setattr__(self, field_name, default)
@@ -204,6 +214,13 @@ def load_config() -> AppConfig:
         max_tokens=s.get("ocr_max_tokens", 500),
     )
 
+    team = TeamConfig(
+        enabled=s.get("team_enabled", False),
+        max_agents=s.get("team_max_agents", 2),
+        budget_multiplier=s.get("team_budget_multiplier", 2.0),
+        task_timeout=s.get("team_task_timeout", 120),
+    )
+
     return AppConfig(
         model=model,
         agent=agent,
@@ -213,5 +230,6 @@ def load_config() -> AppConfig:
         pipeline=pipeline,
         browser_vision=browser_vision,
         ocr=ocr,
+        team=team,
         sandbox_mode=s.get("sandbox_mode", "docker"),
     )

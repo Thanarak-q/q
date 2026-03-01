@@ -672,6 +672,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to hooks YAML configuration file.",
     )
 
+    parser.add_argument(
+        "--team",
+        action="store_true",
+        default=False,
+        help="Enable team mode (multiple agents collaborate to solve).",
+    )
+
     # --mode kept for backward compat but ignored (always single agent)
     parser.add_argument(
         "--mode",
@@ -731,6 +738,7 @@ def main() -> None:
             repo_path=args.repo,
             config_path=args.config,
             watch=args.watch,
+            team=args.team,
         )
 
 

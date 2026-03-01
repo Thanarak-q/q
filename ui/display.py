@@ -403,6 +403,29 @@ class Display:
             f"${total_cost:.4f} total. Goodbye![/dim]\n"
         )
 
+    def show_team_status(self, team_info: dict) -> None:
+        """Display team status summary."""
+        table = Table(title="Team Status")
+        table.add_column("Agent", style="cyan")
+        table.add_column("Role")
+        table.add_column("Status")
+        table.add_column("Task")
+
+        for mate in team_info.get("teammates", []):
+            status_style = {
+                "running": "green",
+                "done": "dim",
+                "waiting": "yellow",
+            }.get(mate.get("status", ""), "dim")
+            table.add_row(
+                mate.get("name", "?"),
+                mate.get("role", "?"),
+                f"[{status_style}]{mate.get('status', '?')}[/{status_style}]",
+                mate.get("task", "-")[:50],
+            )
+
+        self.console.print(table)
+
     def show_setup_needed(self) -> None:
         """Display first-run setup instructions when no API key is set."""
         self.console.print(

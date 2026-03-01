@@ -35,6 +35,11 @@ COMMAND_HELP: dict[str, str] = {
     "/load <id>": "Load a saved session",
     "/sessions": "List all saved sessions",
     "/history": "Show solve history for this session",
+    # Team
+    "/team": "Show team status or toggle team mode",
+    "/team on, /team off": "Enable/disable team solving",
+    "/team tasks": "Show team task board",
+    "/team messages": "Show team message log",
     # Settings
     "/settings": "Show all settings from ~/.q/settings.json",
     "/settings <key> <value>": "Update a setting (e.g. /settings openai_api_key sk-...)",
@@ -101,6 +106,7 @@ def handle_command(
         "/workflow": _cmd_workflow,
         "/rewind": _cmd_rewind,
         "/settings": _cmd_settings,
+        "/team": _cmd_team,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -857,6 +863,63 @@ def _cmd_rewind(arg: str, state: ChatState, display: Display) -> bool:
     display.show_info(result_msg)
     display.console.print(
         "  [dim]Type a new hint or instruction before the agent continues.[/dim]\n"
+    )
+    return False
+
+
+def _cmd_team(arg: str, state: ChatState, display: Display) -> bool:
+    from rich.table import Table
+
+    subcmd = arg.strip().lower()
+
+    # /team on — enable team mode
+    if subcmd in ("on", "enable", "start"):
+        state.team_mode = True
+        display.show_info("Team mode enabled. Next solve will use a coordinated team.")
+        return False
+
+    # /team off — disable team mode
+    if subcmd in ("off", "disable", "stop"):
+        state.team_mode = False
+        display.show_info("Team mode disabled. Next solve will use single agent.")
+        return False
+
+    # /team tasks — show task board
+    if subcmd == "tasks":
+        leader = getattr(state, "_team_leader", None)
+        if leader and hasattr(leader, "_last_taskboard"):
+            display.console.print(leader._last_taskboard.summary())
+        else:
+            display.show_info("No active team. Start a team solve first.")
+        return False
+
+    # /team messages — show message log
+    if subcmd == "messages":
+        leader = getattr(state, "_team_leader", None)
+        if leader and hasattr(leader, "_last_msgbus"):
+            msgs = leader._last_msgbus.get_log(limit=20)
+            if not msgs:
+                display.show_info("No messages yet.")
+                return False
+            table = Table(title="Team Messages", show_header=True)
+            table.add_column("From", style="cyan", max_width=12)
+            table.add_column("Type", max_width=10)
+            table.add_column("Content", max_width=60)
+            for m in msgs:
+                table.add_row(m.sender, m.msg_type, m.content[:60])
+            display.console.print(table)
+        else:
+            display.show_info("No active team.")
+        return False
+
+    # /team (no args) — show status
+    status = "ON" if getattr(state, "team_mode", False) else "OFF"
+    display.console.print(
+        f"\n  [bold]Team mode:[/bold] {status}\n\n"
+        f"  [dim]/team on       Enable team solving[/dim]\n"
+        f"  [dim]/team off      Disable team solving[/dim]\n"
+        f"  [dim]/team tasks    Show task board[/dim]\n"
+        f"  [dim]/team messages Show message log[/dim]\n"
     )
     return False
 
