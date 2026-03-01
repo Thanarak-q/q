@@ -16,6 +16,7 @@ from tools.network import NetworkTool
 from tools.python_exec import PythonExecTool
 from tools.recon import ReconTool
 from tools.shell import ShellTool
+from tools.web_search import WebSearchTool
 from utils.logger import get_logger
 
 
@@ -107,6 +108,7 @@ class ToolRegistry:
         docker_manager: Optional[Any] = None,
         workspace: Optional[Any] = None,
         vision_config: Optional[Any] = None,
+        brave_api_key: str = "",
     ) -> None:
         """Initialise the registry and register default tools.
 
@@ -124,6 +126,7 @@ class ToolRegistry:
         self.register(FileManagerTool(workspace=workspace, docker_manager=docker_manager))
         self.register(NetworkTool())
         self.register(ReconTool())
+        self.register(WebSearchTool(brave_api_key=brave_api_key))
         self.register(AnswerUserTool())
 
         from tools.browser import BrowserTool

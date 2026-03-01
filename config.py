@@ -33,6 +33,7 @@ class ModelConfig:
     anthropic_api_key: str = ""
     google_api_key: str = ""
     fallback_model: str = ""
+    brave_api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,7 @@ def load_config() -> AppConfig:
         anthropic_api_key=s.get("anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", "")),
         google_api_key=s.get("google_api_key", os.getenv("GOOGLE_API_KEY", "")),
         fallback_model=s.get("fallback_model", ""),
+        brave_api_key=s.get("brave_api_key", os.getenv("BRAVE_API_KEY", "")),
     )
 
     agent = AgentConfig(

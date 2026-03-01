@@ -485,6 +485,7 @@ def run_solve(
     display: Display,
     callbacks: ChatCallbacks,
     watch_mode: bool = False,
+    qi: "QInput | None" = None,
 ) -> SolveResult | None:
     """Run the solve pipeline for a challenge description."""
     # --- Team mode: delegate to TeamLeader ---
@@ -499,7 +500,13 @@ def run_solve(
             return None  # planning failed, abort
         display.show_plan(plan_text, cat_str or "?")
         try:
-            response = input("  plan> ").strip()
+            if qi is not None:
+                response = qi.get_input("  plan> ") or ""
+                if response == QInput.CTRL_C:
+                    display.console.print("\n  [dim]Cancelled.[/dim]")
+                    return None
+            else:
+                response = input("  plan> ").strip()
         except (KeyboardInterrupt, EOFError):
             display.console.print("\n  [dim]Cancelled.[/dim]")
             return None
@@ -972,7 +979,7 @@ def chat_loop(
                     display.show_setup_needed()
                     continue
                 display.console.print()
-                run_solve(action["text"], state, display, callbacks, watch_mode=watch)
+                run_solve(action["text"], state, display, callbacks, watch_mode=watch, qi=qi)
 
     except KeyboardInterrupt:
         display.console.print()

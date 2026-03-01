@@ -266,6 +266,7 @@ class Orchestrator:
             docker_manager=docker_manager,
             workspace=self._workspace,
             vision_config=self._config.browser_vision,
+            brave_api_key=self._config.model.brave_api_key,
         )
         self._context = ContextManager(self._provider, self._config)
         self._log = get_logger()

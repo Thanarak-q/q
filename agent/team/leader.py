@@ -95,34 +95,40 @@ class TeamLeader:
                 )
                 phase1_tasks.append(task)
             else:
-                # Subsequent agents = exploit/solve (blocked by phase 1)
+                # Subsequent agents = exploit/solve (starts after first discovery)
                 task = taskboard.create(
                     subject=f"{mate.role}: exploit/solve",
                     description=(
                         f"Challenge: {description}\n\n"
                         f"Your role: {mate.role}\n"
                         f"Instructions: {mate.prompt}\n\n"
-                        "Wait for recon/analysis results before starting."
+                        "Check team findings before starting — "
+                        "phase 1 agent is running in parallel."
                     ),
-                    blocked_by=[t.id for t in phase1_tasks],
                     assignee=mate.name,
                 )
                 phase2_tasks.append(task)
 
         self._cb.on_phase("Team", f"Created {len(phase1_tasks) + len(phase2_tasks)} tasks")
 
-        # 4. Spawn teammate threads
+        # Phase 2 agents wait on this event until phase 1 sends its first
+        # discovery — so they start with real findings instead of nothing.
+        self._first_discovery_event = threading.Event()
+
+        # 4. Spawn teammate threads — all start immediately (truly parallel)
         threads: dict[str, threading.Thread] = {}
         results: dict[str, SolveResult] = {}
         results_lock = threading.Lock()
 
-        for mate in mates:
+        for i, mate in enumerate(mates):
+            # Phase 1 agents: no wait. Phase 2+ agents: wait for first discovery.
+            wait_event = None if i == 0 else self._first_discovery_event
             t = threading.Thread(
                 target=self._run_teammate,
                 args=(
                     mate, description, taskboard, msgbus,
                     files, target_url, flag_pattern,
-                    results, results_lock,
+                    results, results_lock, wait_event,
                 ),
                 name=f"team-{mate.name}",
                 daemon=True,
@@ -156,6 +162,7 @@ class TeamLeader:
         flag_pattern: str | None,
         results: dict[str, SolveResult],
         results_lock: threading.Lock,
+        wait_event: threading.Event | None = None,
     ) -> None:
         """Run a single teammate in its own thread."""
         try:
@@ -170,9 +177,19 @@ class TeamLeader:
                 _log.debug(f"[{mate.name}] Claim race on {task.id}, retrying...")
                 task = None
 
+            if not task:
+                return
+
+            # Phase 2 agents wait for phase 1's first discovery so they start
+            # with real findings instead of an empty context.
+            if wait_event is not None:
+                timeout = float(self._config.team.task_timeout)
+                self._cb.on_phase("Team", f"[{mate.name}] Waiting for phase 1 findings...")
+                wait_event.wait(timeout=timeout)
+
             self._cb.on_phase("Team", f"[{mate.name}] Started: {task.subject[:60]}")
 
-            # Collect context from completed tasks (phase 1 results for phase 2 agents)
+            # Collect context from completed tasks and discoveries so far
             prior_results = taskboard.get_completed_results()
             discoveries = msgbus.get_discoveries()
 
@@ -283,9 +300,11 @@ class TeamLeader:
                     with results_lock:
                         return self._build_result(results, taskboard, found_flag=msg.content)
 
-                # Log other messages to UI
+                # Log other messages to UI + unblock phase 2 on first discovery
                 elif msg.msg_type == "discovery":
                     self._cb.on_phase("Team", f"[{msg.sender}] {msg.content[:200]}")
+                    if hasattr(self, "_first_discovery_event"):
+                        self._first_discovery_event.set()
 
             # Check if all tasks done
             if taskboard.all_done():
