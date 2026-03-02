@@ -264,9 +264,7 @@ class Display:
                 padding=(0, 1),
             )
         )
-        self.console.print(
-            "  [dim]Enter to solve · type to add notes · 'skip' to skip plan[/dim]\n"
-        )
+        self.console.print()
 
     def show_error(self, message: str) -> None:
         """Display an error message."""

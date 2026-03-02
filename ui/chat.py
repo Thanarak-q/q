@@ -931,16 +931,6 @@ def chat_loop(
                 )
                 break
 
-            elif action["action"] == "greet":
-                display.console.print(
-                    f"  [dim]{random.choice(_GREETINGS)}[/dim]"
-                )
-                continue
-
-            elif action["action"] == "help":
-                handle_command("/help", state, display)
-                continue
-
             elif action["action"] == "command":
                 should_exit = handle_command(action["cmd"], state, display)
                 if should_exit:
@@ -948,7 +938,13 @@ def chat_loop(
                 continue
 
             elif action["action"] == "chat":
-                # Lightweight LLM chat — no solve pipeline
+                # All non-command input goes to LLM
+                if not state.config.model.api_key and not state.config.model.anthropic_api_key:
+                    state.config = load_config()
+                    state.current_model = state.config.model.default_model
+                if not state.config.model.api_key and not state.config.model.anthropic_api_key:
+                    display.show_setup_needed()
+                    continue
                 try:
                     from agent.providers import create_provider
 
@@ -961,10 +957,13 @@ def chat_loop(
                                 "role": "system",
                                 "content": (
                                     "You are q, a CTF-solving capybara assistant. "
-                                    "The user is talking to you — respond helpfully "
-                                    "and concisely. If they're giving instructions "
-                                    "about a challenge, acknowledge and ask if they "
-                                    "want to start solving."
+                                    "The user is talking to you. Respond helpfully "
+                                    "and concisely. If the user is describing or "
+                                    "pasting a CTF challenge, respond EXACTLY with "
+                                    "the word SOLVE on its own line followed by the "
+                                    "challenge description. Otherwise just chat normally. "
+                                    "If they give instructions (read a file, check something), "
+                                    "acknowledge and ask if they want you to start solving."
                                 ),
                             },
                             {"role": "user", "content": action["text"]},
@@ -977,31 +976,22 @@ def chat_loop(
                         or _chat_resp.get("message", {}).get("content", "")
                         or "..."
                     )
-                    display.console.print(f"  {_reply}")
+                    # LLM detected a challenge — route to solve
+                    if _reply.strip().startswith("SOLVE"):
+                        solve_text = _reply.strip().removeprefix("SOLVE").strip()
+                        display.console.print()
+                        run_solve(
+                            solve_text or action["text"],
+                            state, display, callbacks,
+                            watch_mode=watch, qi=qi,
+                        )
+                    else:
+                        display.console.print(f"  {_reply}")
                 except Exception as exc:
                     display.console.print(
                         f"  [dim](chat error: {exc})[/dim]"
                     )
                 continue
-
-            elif action["action"] == "clarify":
-                display.console.print(
-                    f"  [dim]Did you mean to solve a challenge? "
-                    f"Give me more details.[/dim]\n"
-                    f"  [dim]Or type /help for commands.[/dim]"
-                )
-                continue
-
-            elif action["action"] == "solve":
-                # Reload config in case user just set an API key via /settings
-                if not state.config.model.api_key and not state.config.model.anthropic_api_key:
-                    state.config = load_config()
-                    state.current_model = state.config.model.default_model
-                if not state.config.model.api_key and not state.config.model.anthropic_api_key:
-                    display.show_setup_needed()
-                    continue
-                display.console.print()
-                run_solve(action["text"], state, display, callbacks, watch_mode=watch, qi=qi)
 
     except KeyboardInterrupt:
         display.console.print()
