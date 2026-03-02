@@ -503,6 +503,7 @@ class Orchestrator:
         try:
             result = self._run_pipeline(
                 description, files, target_url, flag_pattern, forced_category,
+                forced_plan=forced_plan,
             )
         except KeyboardInterrupt:
             self._cb.on_error("Interrupted by user.")
@@ -644,6 +645,7 @@ class Orchestrator:
         target_url: str | None,
         flag_pattern: str | None,
         forced_category: str | None = None,
+        forced_plan: str | None = None,
     ) -> SolveResult:
         """Run the classify -> solve pipeline (single agent).
 

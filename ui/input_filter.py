@@ -77,5 +77,24 @@ def classify_input(text: str) -> dict:
         if not has_file_ref and not has_url_ref:
             return {"action": "clarify", "text": stripped}
 
+    # Conversational / instructional input — chat mode
+    _first_word = lower.split()[0] if lower.split() else ""
+    _CHAT_STARTERS = frozenset({
+        "read", "look", "check", "tell", "show", "explain",
+        "what", "how", "why", "who", "where", "when", "which",
+        "can", "could", "would", "should", "please", "do", "don't",
+        "dont", "list", "describe", "help", "give", "find", "search",
+        "use", "try", "run", "set", "remember", "forget", "note",
+        "wait", "stop", "pause", "hold", "think", "analyze", "analyse",
+    })
+    _GREETING_PREFIXES = ("hi ", "hey ", "hello ", "yo ", "sup ")
+
+    if lower.endswith("?"):
+        return {"action": "chat", "text": stripped}
+    if any(lower.startswith(p) for p in _GREETING_PREFIXES):
+        return {"action": "chat", "text": stripped}
+    if _first_word in _CHAT_STARTERS:
+        return {"action": "chat", "text": stripped}
+
     # Looks like a real challenge — send to solver
     return {"action": "solve", "text": stripped}

@@ -962,6 +962,43 @@ def chat_loop(
                     break
                 continue
 
+            elif action["action"] == "chat":
+                # Lightweight LLM chat — no solve pipeline
+                try:
+                    from agent.providers.router import ProviderRouter
+
+                    _chat_provider = ProviderRouter(state.config)
+                    _chat_model = state.config.model.fast_model
+                    _chat_resp = _chat_provider.chat(
+                        model=_chat_model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are q, a CTF-solving capybara assistant. "
+                                    "The user is talking to you — respond helpfully "
+                                    "and concisely. If they're giving instructions "
+                                    "about a challenge, acknowledge and ask if they "
+                                    "want to start solving."
+                                ),
+                            },
+                            {"role": "user", "content": action["text"]},
+                        ],
+                        temperature=0.4,
+                        max_tokens=512,
+                    )
+                    _reply = (
+                        _chat_resp.get("content", "")
+                        or _chat_resp.get("message", {}).get("content", "")
+                        or "..."
+                    )
+                    display.console.print(f"  {_reply}")
+                except Exception as exc:
+                    display.console.print(
+                        f"  [dim](chat error: {exc})[/dim]"
+                    )
+                continue
+
             elif action["action"] == "clarify":
                 display.console.print(
                     f"  [dim]Did you mean to solve a challenge? "
