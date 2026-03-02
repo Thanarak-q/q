@@ -18,6 +18,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.shortcuts import CompleteStyle
 from prompt_toolkit.styles import Style
 
 
@@ -29,21 +30,20 @@ from prompt_toolkit.styles import Style
 class SlashCommandCompleter(Completer):
     """Show command suggestions when user types /."""
 
-    _cache: dict[str, str] | None = None
+    def __init__(self) -> None:
+        self._commands: dict[str, str] = self._load_commands()
 
-    def _get_commands(self) -> dict[str, str]:
-        if self._cache is None:
-            try:
-                from ui.commands import COMMAND_HELP
-                result = {}
-                for key, desc in COMMAND_HELP.items():
-                    for part in key.replace(",", " ").split():
-                        if part.startswith("/") and part not in result:
-                            result[part] = desc
-                self._cache = result
-            except Exception:
-                self._cache = {}
-        return self._cache
+    def _load_commands(self) -> dict[str, str]:
+        try:
+            from ui.commands import COMMAND_HELP
+            result = {}
+            for key, desc in COMMAND_HELP.items():
+                for part in key.replace(",", " ").split():
+                    if part.startswith("/") and part not in result:
+                        result[part] = desc
+            return result
+        except Exception:
+            return {}
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -57,7 +57,7 @@ class SlashCommandCompleter(Completer):
         if " " in word:
             return
 
-        for cmd, desc in sorted(self._get_commands().items()):
+        for cmd, desc in sorted(self._commands.items()):
             if cmd.startswith(word):
                 yield Completion(
                     cmd,
@@ -113,9 +113,10 @@ class QInput:
             history=FileHistory(history_path),
             style=Q_STYLE,
             complete_while_typing=True,
-            complete_in_thread=True,
+            complete_in_thread=False,
+            complete_style=CompleteStyle.MULTI_COLUMN,
             enable_history_search=True,
-            reserve_space_for_menu=8,
+            reserve_space_for_menu=6,
         )
 
     def get_input(self, prompt_text: str = "> ") -> str | None:
