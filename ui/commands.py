@@ -55,8 +55,8 @@ COMMAND_HELP: dict[str, str] = {
     "/exit, /quit": "Exit with session summary",
 }
 
-# Valid models
-VALID_MODELS = {"gpt-4o", "gpt-4o-mini", "o3", "o3-mini", "gpt-4-turbo"}
+# Valid model prefixes (used by /model validation)
+_MODEL_EXAMPLES = "gpt-4o, o3, claude-sonnet-4-5, gemini-2.0-flash"
 
 # Valid categories
 VALID_CATEGORIES = {"web", "pwn", "crypto", "reverse", "forensics", "misc"}
@@ -170,35 +170,50 @@ def _cmd_model(arg: str, state: ChatState, display: Display) -> bool:
             f"\n  Current model: [cyan]{state.current_model}[/cyan]\n"
             f"  Fast model:    [dim]{state.config.model.fast_model}[/dim]\n"
             f"  Reasoning:     [dim]{state.config.model.reasoning_model}[/dim]\n"
+            f"  [dim]Examples: {_MODEL_EXAMPLES}[/dim]\n"
         )
         return False
 
     model = arg.strip()
-    if model not in VALID_MODELS:
+
+    # Validate using provider prefix routing
+    from agent.providers.router import PROVIDER_PREFIXES
+    known = any(model.startswith(prefix) for prefix, _ in PROVIDER_PREFIXES)
+    if not known:
         display.show_error(
-            f"Unknown model '{model}'. Valid: {', '.join(sorted(VALID_MODELS))}"
+            f"Unknown model prefix for '{model}'. Examples: {_MODEL_EXAMPLES}"
         )
         return False
 
     old = state.current_model
     state.current_model = model
-    # Also update config for new orchestrator instances
+    # Update config — preserve all existing fields, only change default_model
     from config import AppConfig, ModelConfig
 
+    m = state.config.model
     state.config = AppConfig(
         model=ModelConfig(
-            fast_model=state.config.model.fast_model,
+            fast_model=m.fast_model,
             default_model=model,
-            reasoning_model=state.config.model.reasoning_model,
-            api_key=state.config.model.api_key,
-            temperature=state.config.model.temperature,
-            max_tokens=state.config.model.max_tokens,
+            reasoning_model=m.reasoning_model,
+            api_key=m.api_key,
+            temperature=m.temperature,
+            max_tokens=m.max_tokens,
+            streaming=m.streaming,
+            anthropic_api_key=m.anthropic_api_key,
+            google_api_key=m.google_api_key,
+            fallback_model=m.fallback_model,
+            brave_api_key=m.brave_api_key,
         ),
         agent=state.config.agent,
         tool=state.config.tool,
         docker=state.config.docker,
         log=state.config.log,
         pipeline=state.config.pipeline,
+        browser_vision=state.config.browser_vision,
+        ocr=state.config.ocr,
+        team=state.config.team,
+        plan_mode=state.config.plan_mode,
         sandbox_mode=state.config.sandbox_mode,
     )
     display.show_model_change(old, model)
