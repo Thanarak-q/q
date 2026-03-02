@@ -75,6 +75,9 @@ class ChatState:
     # Orchestrator reference for /rewind command
     _rewind_orchestrator: Any = None
 
+    # Persistent orchestrator for chat turns (preserves conversation context)
+    _chat_orchestrator: Any = None
+
     # Team mode
     team_mode: bool = False
     _team_leader: Any = None
@@ -487,8 +490,8 @@ def run_chat_turn(
 ) -> SolveResult | None:
     """Run a lightweight conversational turn with tools (no classify/plan).
 
-    Creates a minimal Orchestrator, calls chat_turn(), and displays the result.
-    Much cheaper than run_solve() — suited for "list files", "read X", etc.
+    Reuses a persistent Orchestrator so conversation context is preserved
+    across turns. Much cheaper than run_solve().
     """
     # Shared cost tracker across session
     if state.session_cost_tracker is None:
@@ -496,13 +499,17 @@ def run_chat_turn(
             budget_limit=state.config.agent.max_cost_per_challenge,
         )
 
-    orch = Orchestrator(
-        config=state.config,
-        docker_manager=state.docker_manager,
-        workspace=state.workspace,
-        callbacks=callbacks,
-        cost_tracker=state.session_cost_tracker,
-    )
+    # Reuse the same orchestrator across chat turns for context continuity
+    if state._chat_orchestrator is None:
+        state._chat_orchestrator = Orchestrator(
+            config=state.config,
+            docker_manager=state.docker_manager,
+            workspace=state.workspace,
+            callbacks=callbacks,
+            cost_tracker=state.session_cost_tracker,
+        )
+    orch = state._chat_orchestrator
+    orch._cb = callbacks
 
     if state.solving:
         display.show_error("Already solving. Wait or Ctrl+C to stop.")
@@ -1069,28 +1076,12 @@ def chat_loop(
                             state, display, callbacks,
                         )
                     else:
-                        # Pure chat response — single LLM call, no tools
-                        _chat_resp2 = _chat_provider.chat(
-                            model=_chat_model,
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": (
-                                        "You are q, a CTF-solving capybara assistant. "
-                                        "Respond helpfully and concisely. Keep it short."
-                                    ),
-                                },
-                                {"role": "user", "content": action["text"]},
-                            ],
-                            temperature=0.4,
-                            max_tokens=256,
+                        # Chat response — route through chat_turn for context
+                        display.console.print()
+                        run_chat_turn(
+                            action["text"],
+                            state, display, callbacks,
                         )
-                        _reply = (
-                            _chat_resp2.get("content", "")
-                            or _chat_resp2.get("message", {}).get("content", "")
-                            or "..."
-                        )
-                        display.console.print(f"  {_reply}")
                 except Exception as exc:
                     display.console.print(
                         f"  [dim](chat error: {exc})[/dim]"

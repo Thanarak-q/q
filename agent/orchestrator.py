@@ -656,6 +656,15 @@ class Orchestrator:
         self._start_time = time.time()
         self._iteration = 0
 
+        # Reset per-turn state (pivot, recent calls) but keep context history
+        self._pivot = PivotManager(
+            stall_threshold=self._config.agent.stall_threshold,
+        )
+        self._recent_tool_calls = []
+        self._recent_outputs = []
+        self._consecutive_low_confidence = 0
+        self._last_tool_iteration = 0
+
         # Minimal intent — treat as answer_question
         self._intent = IntentResult(
             intent=UserIntent.ANSWER_QUESTION,
