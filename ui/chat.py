@@ -956,36 +956,63 @@ def chat_loop(
                             {
                                 "role": "system",
                                 "content": (
-                                    "You are q, a CTF-solving capybara assistant. "
-                                    "The user is talking to you. Respond helpfully "
-                                    "and concisely. If the user is describing or "
-                                    "pasting a CTF challenge, respond EXACTLY with "
-                                    "the word SOLVE on its own line followed by the "
-                                    "challenge description. Otherwise just chat normally. "
-                                    "If they give instructions (read a file, check something), "
-                                    "acknowledge and ask if they want you to start solving."
+                                    "You are a router. Classify the user message.\n"
+                                    "Reply ONLY with CHAT or SOLVE — nothing else.\n\n"
+                                    "SOLVE if the message:\n"
+                                    "- Mentions any filename, path, or extension\n"
+                                    "- Asks to read, open, check, analyze, look at, or run something\n"
+                                    "- Describes a CTF challenge or security task\n"
+                                    "- Contains technical instructions or tasks\n"
+                                    "- Contains a URL, IP, port, or service reference\n"
+                                    "- Asks you to do something actionable\n\n"
+                                    "CHAT if the message:\n"
+                                    "- Is purely social (greetings, how are you, thanks)\n"
+                                    "- Is a meta question about you or your capabilities\n"
+                                    "- Has no actionable task\n\n"
+                                    "Reply with one word only: CHAT or SOLVE"
                                 ),
                             },
                             {"role": "user", "content": action["text"]},
                         ],
-                        temperature=0.4,
-                        max_tokens=512,
+                        temperature=0.0,
+                        max_tokens=10,
                     )
-                    _reply = (
+                    _decision = (
                         _chat_resp.get("content", "")
                         or _chat_resp.get("message", {}).get("content", "")
-                        or "..."
-                    )
-                    # LLM detected a challenge — route to solve
-                    if _reply.strip().startswith("SOLVE"):
-                        solve_text = _reply.strip().removeprefix("SOLVE").strip()
+                        or ""
+                    ).strip().upper()
+
+                    if "SOLVE" in _decision:
+                        # Route to solve pipeline (has tools)
                         display.console.print()
                         run_solve(
-                            solve_text or action["text"],
+                            action["text"],
                             state, display, callbacks,
                             watch_mode=watch, qi=qi,
                         )
                     else:
+                        # Chat response — second LLM call
+                        _chat_resp2 = _chat_provider.chat(
+                            model=_chat_model,
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "You are q, a CTF-solving capybara assistant. "
+                                        "Respond helpfully and concisely. Keep it short."
+                                    ),
+                                },
+                                {"role": "user", "content": action["text"]},
+                            ],
+                            temperature=0.4,
+                            max_tokens=256,
+                        )
+                        _reply = (
+                            _chat_resp2.get("content", "")
+                            or _chat_resp2.get("message", {}).get("content", "")
+                            or "..."
+                        )
                         display.console.print(f"  {_reply}")
                 except Exception as exc:
                     display.console.print(
