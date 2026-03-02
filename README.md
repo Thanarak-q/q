@@ -81,7 +81,7 @@ Add at least one API key:
 agentq
 ```
 
-Type a CTF challenge description and press Enter. That's it.
+Talk to Q like a normal assistant — or paste a CTF challenge to solve it.
 
 ---
 
@@ -150,7 +150,15 @@ Pulls latest code from GitHub and reinstalls dependencies automatically.
 agentq
 ```
 
-Type a challenge description to start solving.
+Q automatically routes your input through a 3-way classifier:
+
+| You type | Route | What happens |
+|----------|-------|-------------|
+| `"hi"`, `"thanks"`, `"how are you"` | **CHAT** | Quick LLM response, no tools (~$0.001) |
+| `"list files here"`, `"read scenario.txt"` | **TASK** | Lightweight tool loop, 5 steps max (~$0.01) |
+| CTF challenge description | **CHALLENGE** | Full pipeline: classify → plan → solve (~$0.12+) |
+
+Simple tasks skip the entire CTF pipeline — no classification, no attack plan, no scope lock. Just runs the tool and tells you what it found.
 
 | Input | Behaviour |
 |-------|-----------|
@@ -364,6 +372,7 @@ Phase 1 starts immediately. Phase 2 starts as soon as Phase 1 makes a discovery 
 
 ## Features
 
+- **Conversational mode** — CHAT/TASK/CHALLENGE 3-way router; simple tasks use lightweight tool loop, only CTF challenges trigger full pipeline
 - **Plan mode** — classify challenge, generate attack plan, pause for user approval before solving
 - **Multi-provider LLM** — OpenAI, Anthropic, Google with prefix-based routing (all fully implemented)
 - **Team mode** — parallel specialized agents (recon + exploit) with event-based phase sync
@@ -463,7 +472,7 @@ ctf-agent/
 ├── install.sh                  # One-line installer
 ├── requirements.txt            # Python dependencies
 ├── agent/
-│   ├── orchestrator.py         # ReAct loop, checkpoints, reflection, anti-soliloquy
+│   ├── orchestrator.py         # ReAct loop, chat_turn(), checkpoints, reflection
 │   ├── classifier.py           # Intent & category classification
 │   ├── planner.py              # Attack planner + hypothesis-driven pivoting
 │   ├── context_manager.py      # Context window management
@@ -507,7 +516,7 @@ ctf-agent/
 │   ├── procedural.py           # Procedural memory (success chains + anti-patterns)
 │   └── extractor.py            # Auto-extract techniques from solves
 ├── ui/
-│   ├── chat.py                 # Chat loop + plan approval flow
+│   ├── chat.py                 # Chat loop + 3-way router + plan approval
 │   ├── display.py              # Rich display + plan panel
 │   ├── commands.py             # Slash command handlers (/plan, /team, /rewind, ...)
 │   ├── watch.py                # Live 2x2 Rich dashboard
@@ -517,7 +526,7 @@ ctf-agent/
 │   ├── tree.py                 # Task tree renderer
 │   └── mascot.py               # Capybara mascot
 ├── prompts/
-│   ├── system.py               # System prompt builder + scope lock
+│   ├── system.py               # System prompt builder (CTF + conversational)
 │   └── strategies.py           # Pivot prompts
 ├── utils/
 │   ├── session_manager.py      # Session persistence
