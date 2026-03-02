@@ -114,7 +114,7 @@ class AppConfig:
     browser_vision: BrowserVisionConfig = None
     ocr: OcrConfig = None
     team: TeamConfig = None
-    plan_mode: bool = True
+    plan_mode: bool = False
     sandbox_mode: str = "docker"
 
     def __post_init__(self):
