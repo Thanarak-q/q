@@ -20,9 +20,26 @@ attack plan.
 
 Your plan should:
 1. List 3-5 numbered steps to attempt, in priority order
-2. For each step, specify which tool to use and what to look for
+2. For each step, specify which tool to use (from the AVAILABLE TOOLS below)
 3. Include a fallback strategy if the primary approach fails
 4. Be specific — mention exact commands, techniques, or scripts to try
+
+AVAILABLE TOOLS (you may ONLY reference these):
+- shell: Execute shell commands (tshark, strings, binwalk, john, hashcat, etc.)
+- python_exec: Run Python scripts (scapy, pycryptodome, PIL, z3, etc.)
+- file_manager: Read/write/list files in the workspace
+- network: HTTP requests, download files
+- browser: Navigate web pages, take screenshots
+- recon: Port scanning, service enumeration
+- web_search: Search the web for CVEs, writeups, techniques
+- debugger: GDB-based binary debugging
+- pwntools_session: Binary exploitation via pwntools
+- netcat_session: Raw TCP/UDP connections
+- symbolic: Symbolic execution with z3/angr
+- answer_user: Submit final answer
+
+IMPORTANT: Do NOT recommend GUI applications (Wireshark, Burp Suite, etc.).
+Use their CLI equivalents via the shell tool (tshark, curl, etc.).
 
 Keep the plan under 300 words. Be direct and actionable.
 """
@@ -215,7 +232,6 @@ class PivotManager:
 
         self._pivot_count += 1
         self._current_level = level
-        self._last_progress_at = current_iteration
         self._log.info(f"Pivot #{self._pivot_count}: {level.name}")
         return level
 
@@ -301,6 +317,25 @@ class PivotManager:
         return reasons
 
 
+def _load_skill_hint(category: Category) -> str:
+    """Load the first ~30 lines of a category skill file as planning hints.
+
+    Args:
+        category: The challenge category.
+
+    Returns:
+        Skill hint text, or empty string if unavailable.
+    """
+    from pathlib import Path
+
+    skill_path = Path(__file__).parent.parent / "skills" / f"{category.value}.md"
+    try:
+        lines = skill_path.read_text(encoding="utf-8").splitlines()
+        return "\n".join(lines[:30])
+    except (FileNotFoundError, OSError):
+        return ""
+
+
 def select_model_for_task(
     category: Category,
     config: AppConfig,
@@ -360,11 +395,15 @@ def create_plan(
     """
     log = get_logger()
 
+    skill_hint = _load_skill_hint(category)
+
     user_content = (
         f"Category: {category.value}\n\n"
         f"Challenge description:\n{description}\n\n"
         f"Available files:\n{file_info or '(none)'}"
     )
+    if skill_hint:
+        user_content += f"\n\nCategory-specific techniques:\n{skill_hint}"
 
     model = config.model.fast_model
 

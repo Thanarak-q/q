@@ -1613,6 +1613,13 @@ class Orchestrator:
                 self._context.add_user_message(
                     f"User hint: {hint.strip()}"
                 )
+            else:
+                # No hint — force the agent to communicate the blocker
+                self._context.add_user_message(
+                    "No hint was provided. You MUST call answer_user NOW and "
+                    "explain what you are blocked on and what information you "
+                    "need from the user to proceed. Do NOT continue looping."
+                )
 
     # ------------------------------------------------------------------
     # Flag handling

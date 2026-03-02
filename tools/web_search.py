@@ -10,7 +10,7 @@ import re
 import urllib.parse
 from typing import Any
 
-from tools.base import BaseTool, ToolParameter, ToolResult
+from tools.base import BaseTool, ToolParameter
 from utils.logger import get_logger
 
 
@@ -43,31 +43,30 @@ class WebSearchTool(BaseTool):
         self._brave_key = brave_api_key
         self._log = get_logger()
 
-    def execute(self, query: str, max_results: int = 5, **_: Any) -> ToolResult:
+    def execute(self, query: str, max_results: int = 5, **_: Any) -> str:
         max_results = min(int(max_results), 10)
 
         try:
             import requests  # type: ignore
         except ImportError:
-            return ToolResult(
-                success=False,
-                output="web_search requires the requests library: pip install requests",
+            raise RuntimeError(
+                "web_search requires the requests library: pip install requests"
             )
 
         # Try Brave Search first if key is configured
         if self._brave_key:
             try:
                 results = self._search_brave(requests, query, max_results)
-                return ToolResult(success=True, output=self._format(results, query))
+                return self._format(results, query)
             except Exception as exc:
                 self._log.debug(f"Brave search failed: {exc}, falling back to DDG")
 
         # DuckDuckGo HTML fallback (no key needed)
         try:
             results = self._search_ddg(requests, query, max_results)
-            return ToolResult(success=True, output=self._format(results, query))
+            return self._format(results, query)
         except Exception as exc:
-            return ToolResult(success=False, output=f"Web search failed: {exc}")
+            return f"Web search failed: {exc}"
 
     def _search_brave(self, requests: Any, query: str, max_results: int) -> list[dict]:
         resp = requests.get(
