@@ -69,23 +69,19 @@ def classify_input(text: str) -> dict:
     if lower in HELP_WORDS:
         return {"action": "help"}
 
-    # Short input (< 10 chars) with no file/URL references
-    # is likely not a real challenge description
-    if len(stripped) < 10:
-        has_file_ref = any(ext in lower for ext in _CHALLENGE_EXTENSIONS)
-        has_url_ref = any(hint in lower for hint in _URL_HINTS)
-        if not has_file_ref and not has_url_ref:
-            return {"action": "clarify", "text": stripped}
-
     # Conversational / instructional input — chat mode
+    # (checked BEFORE short-input clarify so "how are u" etc. get chat)
     _first_word = lower.split()[0] if lower.split() else ""
     _CHAT_STARTERS = frozenset({
         "read", "look", "check", "tell", "show", "explain",
         "what", "how", "why", "who", "where", "when", "which",
-        "can", "could", "would", "should", "please", "do", "don't",
-        "dont", "list", "describe", "help", "give", "find", "search",
+        "can", "could", "would", "should", "please", "plz", "pls",
+        "do", "don't", "dont", "is", "are", "was", "were", "does",
+        "list", "describe", "help", "give", "find", "search",
         "use", "try", "run", "set", "remember", "forget", "note",
         "wait", "stop", "pause", "hold", "think", "analyze", "analyse",
+        "thanks", "thank", "thx", "ok", "okay", "sure", "yes", "no",
+        "nah", "nope", "yep", "yeah", "yea",
     })
     _GREETING_PREFIXES = ("hi ", "hey ", "hello ", "yo ", "sup ")
 
@@ -95,6 +91,14 @@ def classify_input(text: str) -> dict:
         return {"action": "chat", "text": stripped}
     if _first_word in _CHAT_STARTERS:
         return {"action": "chat", "text": stripped}
+
+    # Short input (< 10 chars) with no file/URL references
+    # is likely not a real challenge description
+    if len(stripped) < 10:
+        has_file_ref = any(ext in lower for ext in _CHALLENGE_EXTENSIONS)
+        has_url_ref = any(hint in lower for hint in _URL_HINTS)
+        if not has_file_ref and not has_url_ref:
+            return {"action": "clarify", "text": stripped}
 
     # Looks like a real challenge — send to solver
     return {"action": "solve", "text": stripped}

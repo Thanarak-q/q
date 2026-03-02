@@ -499,25 +499,10 @@ def run_solve(
         if plan_text is None:
             return None  # planning failed, abort
         display.show_plan(plan_text, cat_str or "?")
-        try:
-            if qi is not None:
-                response = qi.get_input("  plan> ") or ""
-                if response == QInput.CTRL_C:
-                    display.console.print("\n  [dim]Cancelled.[/dim]")
-                    return None
-            else:
-                response = input("  plan> ").strip()
-        except (KeyboardInterrupt, EOFError):
-            display.console.print("\n  [dim]Cancelled.[/dim]")
-            return None
-        if response.lower() in ("skip", "s", "no", "cancel"):
-            display.show_info("Plan skipped.")
-        else:
-            if response:
-                plan_text += f"\n\nUser notes: {response}"
-            forced_plan = plan_text
-            if cat_str and not state.forced_category:
-                state.forced_category = cat_str
+        # Auto-proceed with the plan (no interactive approval needed)
+        forced_plan = plan_text
+        if cat_str and not state.forced_category:
+            state.forced_category = cat_str
 
     # Shared cost tracker across session
     if state.session_cost_tracker is None:
