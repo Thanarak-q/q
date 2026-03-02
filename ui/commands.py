@@ -62,6 +62,29 @@ _MODEL_EXAMPLES = "gpt-4o, o3, claude-sonnet-4-5, gemini-2.0-flash"
 VALID_CATEGORIES = {"web", "pwn", "crypto", "reverse", "forensics", "misc"}
 
 
+def _sync_chat_orchestrator_config(state: "ChatState") -> None:
+    """Propagate updated config/model into the persistent chat orchestrator."""
+    orch = state._chat_orchestrator
+    if orch is None:
+        return
+
+    try:
+        from agent.providers import create_provider
+
+        provider = create_provider(state.config.model)
+        orch._config = state.config
+        orch._provider = provider
+        orch._current_model = state.current_model
+
+        if hasattr(orch, "_context") and orch._context is not None:
+            orch._context._client = provider
+            orch._context._config = state.config
+            orch._context._model = state.current_model
+    except Exception:
+        # Fall back to rebuilding on next turn if live-sync fails.
+        state._chat_orchestrator = None
+
+
 def handle_command(
     raw_input: str,
     state: ChatState,
@@ -178,6 +201,7 @@ def _cmd_model(arg: str, state: ChatState, display: Display) -> bool:
 
     # Validate using provider prefix routing
     from agent.providers.router import PROVIDER_PREFIXES
+
     known = any(model.startswith(prefix) for prefix, _ in PROVIDER_PREFIXES)
     if not known:
         display.show_error(
@@ -216,6 +240,7 @@ def _cmd_model(arg: str, state: ChatState, display: Display) -> bool:
         plan_mode=state.config.plan_mode,
         sandbox_mode=state.config.sandbox_mode,
     )
+    _sync_chat_orchestrator_config(state)
     display.show_model_change(old, model)
     return False
 
@@ -232,6 +257,7 @@ def _cmd_config(arg: str, state: ChatState, display: Display) -> bool:
             return False
 
         from pathlib import Path as P
+
         if not P(yaml_path).exists():
             display.show_error(f"File not found: {yaml_path}")
             return False
@@ -246,6 +272,7 @@ def _cmd_config(arg: str, state: ChatState, display: Display) -> bool:
         state.config = apply_yaml_to_appconfig(qcfg, state.config)
         state.yaml_config_path = yaml_path
         state.current_model = state.config.model.default_model
+        _sync_chat_orchestrator_config(state)
 
         display.show_info(f"Config loaded: {yaml_path}")
         summary = config_summary(qcfg)
@@ -279,6 +306,9 @@ def _cmd_config(arg: str, state: ChatState, display: Display) -> bool:
         "Max Iterations": cfg.agent.max_iterations,
         "Stall Threshold": cfg.agent.stall_threshold,
         "Budget Limit": f"${cfg.agent.max_cost_per_challenge:.2f}",
+        "Turn Cost Limit": f"${cfg.agent.max_cost_per_turn:.2f}",
+        "Turn Token Limit": f"{cfg.agent.max_tokens_per_turn:,}",
+        "Session Cost Limit": f"${cfg.agent.max_cost_per_session:.2f}",
         "Sandbox Mode": cfg.sandbox_mode,
         "Docker Image": cfg.docker.image_name,
         "Tool Output Max": f"{cfg.agent.tool_output_max_chars} chars",
@@ -290,6 +320,7 @@ def _cmd_config(arg: str, state: ChatState, display: Display) -> bool:
         config_data["YAML Config"] = state.yaml_config_path
         try:
             from config_yaml.loader import load_yaml_config
+
             qcfg = load_yaml_config(state.yaml_config_path)
             if qcfg.target and qcfg.target.url:
                 config_data["Target URL"] = qcfg.target.url
@@ -329,8 +360,7 @@ def _cmd_category(arg: str, state: ChatState, display: Display) -> bool:
 
     if cat not in VALID_CATEGORIES:
         display.show_error(
-            f"Unknown category '{cat}'. "
-            f"Valid: {', '.join(sorted(VALID_CATEGORIES))}"
+            f"Unknown category '{cat}'. Valid: {', '.join(sorted(VALID_CATEGORIES))}"
         )
         return False
 
@@ -375,9 +405,7 @@ def _cmd_file(arg: str, state: ChatState, display: Display) -> bool:
 def _cmd_url(arg: str, state: ChatState, display: Display) -> bool:
     if not arg:
         current = state.pending_url or "(none)"
-        display.console.print(
-            f"\n  Target URL: [cyan]{current}[/cyan]\n"
-        )
+        display.console.print(f"\n  Target URL: [cyan]{current}[/cyan]\n")
         return False
 
     state.pending_url = arg.strip()
@@ -561,7 +589,7 @@ def _cmd_resume(arg: str, state: ChatState, display: Display) -> bool:
 
 
 def _cmd_audit(arg: str, state: ChatState, display: Display) -> bool:
-    from utils.audit_log import read_audit_log, summarize_audit_log, export_audit_csv
+    from utils.audit_log import export_audit_csv, read_audit_log, summarize_audit_log
 
     # Parse subcommands: /audit, /audit <id>, /audit export <id>
     parts = arg.split() if arg else []
@@ -620,8 +648,9 @@ def _cmd_mode(arg: str, state: ChatState, display: Display) -> bool:
 
 
 def _cmd_knowledge(arg: str, state: ChatState, display: Display) -> bool:
-    from knowledge.base import KnowledgeBase
     from rich.table import Table
+
+    from knowledge.base import KnowledgeBase
 
     kb = KnowledgeBase()
     parts = arg.split(maxsplit=1) if arg else []
@@ -636,7 +665,7 @@ def _cmd_knowledge(arg: str, state: ChatState, display: Display) -> bool:
         if not results:
             display.show_info(f"No matches for: {query}")
             return False
-        table = Table(title=f"Knowledge: \"{query}\"")
+        table = Table(title=f'Knowledge: "{query}"')
         table.add_column("Challenge", max_width=40)
         table.add_column("Category")
         table.add_column("Techniques", max_width=30)
@@ -675,13 +704,10 @@ def _cmd_knowledge(arg: str, state: ChatState, display: Display) -> bool:
 
     display.console.print(f"\n  [bold]Knowledge Base[/bold]")
     display.console.print(
-        f"  Entries: {stats['total']}  |  "
-        f"Successful: {stats['success']}"
+        f"  Entries: {stats['total']}  |  Successful: {stats['success']}"
     )
     if stats["by_category"]:
-        cats = ", ".join(
-            f"{k}: {v}" for k, v in sorted(stats["by_category"].items())
-        )
+        cats = ", ".join(f"{k}: {v}" for k, v in sorted(stats["by_category"].items()))
         display.console.print(f"  Categories: {cats}")
     if stats["top_techniques"]:
         techs = ", ".join(list(stats["top_techniques"].keys())[:5])
@@ -694,8 +720,9 @@ def _cmd_knowledge(arg: str, state: ChatState, display: Display) -> bool:
 
 
 def _cmd_stats(arg: str, state: ChatState, display: Display) -> bool:
-    from stats.tracker import StatsTracker
     from rich.table import Table
+
+    from stats.tracker import StatsTracker
 
     tracker = StatsTracker()
     dashboard = tracker.get_dashboard()
@@ -714,8 +741,7 @@ def _cmd_stats(arg: str, state: ChatState, display: Display) -> bool:
         f"{overall['success']} solved ({overall['rate']})"
     )
     display.console.print(
-        f"  Cost: {overall['total_cost']} total - "
-        f"{overall['avg_cost']} avg"
+        f"  Cost: {overall['total_cost']} total - {overall['avg_cost']} avg"
     )
     streak_str = f"  Streak: {streaks['current']} wins"
     if streaks["best"] > streaks["current"]:
@@ -741,8 +767,7 @@ def _cmd_stats(arg: str, state: ChatState, display: Display) -> bool:
         display.console.print(table)
 
     display.console.print(
-        f"  Last 7 days: {recent['solves']} solves - "
-        f"{recent['success']} success"
+        f"  Last 7 days: {recent['solves']} solves - {recent['success']} success"
     )
     display.console.print()
     return False
@@ -760,8 +785,9 @@ def _cmd_benchmark(arg: str, state: ChatState, display: Display) -> bool:
         display.show_error(f"File not found: {fpath}")
         return False
 
-    from benchmark.runner import BenchmarkRunner
     from rich.table import Table
+
+    from benchmark.runner import BenchmarkRunner
 
     display.show_info(f"Running benchmark: {fpath}")
 
@@ -800,8 +826,9 @@ def _cmd_benchmark(arg: str, state: ChatState, display: Display) -> bool:
 
 
 def _cmd_workflow(arg: str, state: ChatState, display: Display) -> bool:
-    from utils.session_manager import SessionManager
     from rich.table import Table
+
+    from utils.session_manager import SessionManager
 
     sid = arg.strip() if arg else state.last_session_id
     if not sid:
@@ -944,6 +971,7 @@ def _cmd_team(arg: str, state: ChatState, display: Display) -> bool:
 
 def _cmd_settings(arg: str, state: ChatState, display: Display) -> bool:
     import json
+
     from rich.table import Table
 
     settings_file = Path.home() / ".q" / "settings.json"
@@ -985,19 +1013,35 @@ def _cmd_settings(arg: str, state: ChatState, display: Display) -> bool:
             encoding="utf-8",
         )
         # Mask key in output
-        display_val = ("sk-..." + value[-4:]) if "key" in key and len(value) > 8 else value
+        display_val = (
+            ("sk-..." + value[-4:]) if "key" in key and len(value) > 8 else value
+        )
         display.show_info(f"Saved: {key} = {display_val}")
-        display.show_info("Restart agentq or start a new solve for changes to take effect.")
+        display.show_info(
+            "Restart agentq or start a new solve for changes to take effect."
+        )
         return False
 
     # /settings — show all current settings
     _KEY_GROUPS = [
-        ("API Keys",     ["openai_api_key", "anthropic_api_key", "google_api_key"]),
-        ("Models",       ["default_model", "fast_model", "reasoning_model", "fallback_model"]),
-        ("Agent",        ["max_iterations", "max_cost_per_challenge", "streaming", "temperature", "max_tokens"]),
-        ("Timeouts",     ["shell_timeout", "python_timeout", "network_timeout"]),
-        ("Sandbox",      ["sandbox_mode", "docker_image", "docker_mem"]),
-        ("Logging",      ["log_level"]),
+        ("API Keys", ["openai_api_key", "anthropic_api_key", "google_api_key"]),
+        (
+            "Models",
+            ["default_model", "fast_model", "reasoning_model", "fallback_model"],
+        ),
+        (
+            "Agent",
+            [
+                "max_iterations",
+                "max_cost_per_challenge",
+                "streaming",
+                "temperature",
+                "max_tokens",
+            ],
+        ),
+        ("Timeouts", ["shell_timeout", "python_timeout", "network_timeout"]),
+        ("Sandbox", ["sandbox_mode", "docker_image", "docker_mem"]),
+        ("Logging", ["log_level"]),
     ]
 
     display.console.print(f"\n  [bold]Settings[/bold]  [dim]{settings_file}[/dim]\n")
@@ -1029,7 +1073,9 @@ def _cmd_plan(arg: str, state: ChatState, display: Display) -> bool:
     a = arg.strip().lower()
     if a == "on":
         state.plan_mode = True
-        display.show_info("Plan mode ON — q will show attack plan for approval before solving.")
+        display.show_info(
+            "Plan mode ON — q will show attack plan for approval before solving."
+        )
     elif a == "off":
         state.plan_mode = False
         display.show_info("Plan mode OFF — q will solve immediately without pausing.")

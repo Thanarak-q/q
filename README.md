@@ -246,6 +246,9 @@ All settings live in `~/.q/settings.json` — created automatically on install.
 
   "max_iterations": 15,
   "max_cost_per_challenge": 2.00,
+  "max_cost_per_turn": 0.50,
+  "max_tokens_per_turn": 50000,
+  "max_cost_per_session": 10.00,
 
   "shell_timeout": 30,
   "python_timeout": 60,
@@ -271,6 +274,9 @@ All settings live in `~/.q/settings.json` — created automatically on install.
 | `team_task_timeout` | `300` | Seconds before a team task times out |
 | `max_iterations` | `15` | Max agent iterations per solve |
 | `max_cost_per_challenge` | `2.00` | Budget cap per challenge (USD) |
+| `max_cost_per_turn` | `0.50` | Guardrail cap per user turn (USD) |
+| `max_tokens_per_turn` | `50000` | Guardrail cap per user turn (tokens) |
+| `max_cost_per_session` | `10.00` | Guardrail cap across current interactive session (USD) |
 | `sandbox_mode` | `docker` | Execution mode: `docker` or `local` |
 | `streaming` | `true` | Stream LLM output token by token |
 
@@ -449,6 +455,21 @@ Add challenges to `benchmark/challenges.json`:
   "max_cost": 0.05
 }]
 ```
+
+## Testing
+
+Run regression + guardrail tests:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## E2E Transcripts
+
+Sample end-to-end flows are documented in:
+
+- `transcripts/interactive-troubleshooting.md`
+- `transcripts/ctf-solve.md`
 
 ## Data
 

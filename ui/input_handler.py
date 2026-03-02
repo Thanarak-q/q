@@ -15,12 +15,12 @@ import os
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import CompleteStyle
 from prompt_toolkit.styles import Style
-
 
 # ------------------------------------------------------------------
 # Slash command completer
@@ -36,6 +36,7 @@ class SlashCommandCompleter(Completer):
     def _load_commands(self) -> dict[str, str]:
         try:
             from ui.commands import COMMAND_HELP
+
             result = {}
             for key, desc in COMMAND_HELP.items():
                 for part in key.replace(",", " ").split():
@@ -71,16 +72,19 @@ class SlashCommandCompleter(Completer):
 # Style — green capybara theme
 # ------------------------------------------------------------------
 
-Q_STYLE = Style.from_dict({
-    "prompt": "#00ff00 bold",
-    "completion-menu": "bg:#1a1a2e #e0e0e0",
-    "completion-menu.completion": "bg:#1a1a2e #e0e0e0",
-    "completion-menu.completion.current": "bg:#00ff00 #000000",
-    "completion-menu.meta.completion": "bg:#1a1a2e #888888",
-    "completion-menu.meta.completion.current": "bg:#00ff00 #333333",
-    "scrollbar.background": "bg:#1a1a2e",
-    "scrollbar.button": "bg:#00ff00",
-})
+Q_STYLE = Style.from_dict(
+    {
+        # Minimal dark style inspired by Claude Code's slash list.
+        "prompt": "#8bd5ca bold",
+        "completion-menu": "bg:#000000 #d1d5db",
+        "completion-menu.completion": "bg:#000000 #d1d5db",
+        "completion-menu.completion.current": "bg:#111827 #f3f4f6",
+        "completion-menu.meta.completion": "bg:#000000 #6b7280",
+        "completion-menu.meta.completion.current": "bg:#111827 #9ca3af",
+        "scrollbar.background": "bg:#000000",
+        "scrollbar.button": "bg:#374151",
+    }
+)
 
 
 # ------------------------------------------------------------------
@@ -107,17 +111,63 @@ class QInput:
         history_path = os.path.expanduser(history_file)
         # Ensure parent directory exists
         Path(history_path).parent.mkdir(parents=True, exist_ok=True)
+        key_bindings = self._build_key_bindings()
 
         self._session: PromptSession = PromptSession(
             completer=SlashCommandCompleter(),
             history=FileHistory(history_path),
             style=Q_STYLE,
-            complete_while_typing=True,
+            key_bindings=key_bindings,
+            complete_while_typing=False,
             complete_in_thread=False,
-            complete_style=CompleteStyle.MULTI_COLUMN,
+            complete_style=CompleteStyle.COLUMN,
             enable_history_search=True,
-            reserve_space_for_menu=6,
+            reserve_space_for_menu=12,
         )
+        # Keep slash-command suggestions alive while typing (/a, /se, ...).
+        self._session.default_buffer.on_text_changed += self._on_text_changed
+
+    @staticmethod
+    def _should_show_slash_completions(text_before_cursor: str) -> bool:
+        token = text_before_cursor.lstrip()
+        return token.startswith("/") and " " not in token
+
+    @staticmethod
+    def _build_key_bindings() -> KeyBindings:
+        """Create key bindings to force slash-command suggestions open quickly."""
+        kb = KeyBindings()
+
+        @kb.add("/")
+        def _slash(event) -> None:  # type: ignore[no-untyped-def]
+            buf = event.app.current_buffer
+            buf.insert_text("/")
+            # If user is typing a slash command token, pop completion menu now.
+            token = buf.document.text_before_cursor.lstrip()
+            if token.startswith("/") and " " not in token:
+                buf.start_completion(
+                    select_first=False,
+                    complete_event=CompleteEvent(completion_requested=True),
+                )
+
+        @kb.add("c-space")
+        def _manual_complete(event) -> None:  # type: ignore[no-untyped-def]
+            buf = event.app.current_buffer
+            token = buf.document.text_before_cursor.lstrip()
+            if token.startswith("/") and " " not in token:
+                buf.start_completion(
+                    select_first=False,
+                    complete_event=CompleteEvent(completion_requested=True),
+                )
+
+        return kb
+
+    def _on_text_changed(self, buffer) -> None:  # type: ignore[no-untyped-def]
+        """Refresh slash-command menu on every text change."""
+        if self._should_show_slash_completions(buffer.document.text_before_cursor):
+            buffer.start_completion(
+                select_first=False,
+                complete_event=CompleteEvent(completion_requested=True),
+            )
 
     def get_input(self, prompt_text: str = "> ") -> str | None:
         """Read one line of input with full line-editing support.
@@ -128,9 +178,7 @@ class QInput:
             None on Ctrl+D (EOF).
         """
         try:
-            result = self._session.prompt(
-                HTML(f"<prompt>{prompt_text}</prompt>")
-            )
+            result = self._session.prompt(HTML(f"<prompt>{prompt_text}</prompt>"))
             return result.strip()
         except KeyboardInterrupt:
             return self.CTRL_C

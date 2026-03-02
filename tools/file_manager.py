@@ -58,6 +58,7 @@ class FileManagerTool(BaseTool):
             docker_manager: Optional DockerSandbox instance.
         """
         from config import load_config as _load_config
+
         _cfg = _load_config()
         self._ocr_cfg = _cfg.ocr
         self._api_key = _cfg.model.api_key
@@ -76,9 +77,13 @@ class FileManagerTool(BaseTool):
         Returns:
             Absolute Path within the workspace.
         """
-        resolved = (self._workspace / rel_path).resolve()
-        # Prevent path traversal outside workspace
-        if not str(resolved).startswith(str(self._workspace.resolve())):
+        workspace_root = self._workspace.resolve()
+        resolved = (workspace_root / rel_path).resolve()
+        # Prevent path traversal outside workspace.
+        # String prefix checks are unsafe for paths like /tmp/work vs /tmp/work2.
+        try:
+            resolved.relative_to(workspace_root)
+        except ValueError:
             raise ValueError(f"Path traversal detected: {rel_path}")
         return resolved
 
@@ -125,6 +130,7 @@ class FileManagerTool(BaseTool):
         if self._ocr_cfg.enabled and fpath.suffix.lower() in _IMAGE_EXTS:
             try:
                 from utils.ocr import analyze_image
+
                 img_bytes = fpath.read_bytes()
                 ocr_text = analyze_image(
                     img_bytes,
@@ -134,7 +140,9 @@ class FileManagerTool(BaseTool):
                 )
                 if ocr_text:
                     return f"[Image: {rel_path}]\n[Vision Analysis]\n{ocr_text}"
-                return f"[Image: {rel_path}]\n[Vision Analysis: No readable text detected]"
+                return (
+                    f"[Image: {rel_path}]\n[Vision Analysis: No readable text detected]"
+                )
             except Exception as exc:
                 self._log.warning(f"OCR failed for {rel_path}: {exc}")
                 return f"[Image: {rel_path}] (OCR unavailable: {exc})"

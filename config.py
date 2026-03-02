@@ -43,6 +43,9 @@ class AgentConfig:
     context_limit_percent: int = 80
     tool_output_max_chars: int = 4000
     max_cost_per_challenge: float = 2.00
+    max_cost_per_turn: float = 0.50
+    max_tokens_per_turn: int = 50000
+    max_cost_per_session: float = 10.00
 
 
 @dataclass(frozen=True)
@@ -162,7 +165,9 @@ def load_config() -> AppConfig:
         temperature=s.get("temperature", 0.2),
         max_tokens=s.get("max_tokens", 4096),
         streaming=s.get("streaming", True),
-        anthropic_api_key=s.get("anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", "")),
+        anthropic_api_key=s.get(
+            "anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", "")
+        ),
         google_api_key=s.get("google_api_key", os.getenv("GOOGLE_API_KEY", "")),
         fallback_model=s.get("fallback_model", ""),
         brave_api_key=s.get("brave_api_key", os.getenv("BRAVE_API_KEY", "")),
@@ -174,6 +179,9 @@ def load_config() -> AppConfig:
         context_limit_percent=s.get("context_limit_percent", 80),
         tool_output_max_chars=s.get("tool_output_max_chars", 4000),
         max_cost_per_challenge=s.get("max_cost_per_challenge", 2.00),
+        max_cost_per_turn=s.get("max_cost_per_turn", 0.50),
+        max_tokens_per_turn=s.get("max_tokens_per_turn", 50000),
+        max_cost_per_session=s.get("max_cost_per_session", 10.00),
     )
 
     tool = ToolConfig(

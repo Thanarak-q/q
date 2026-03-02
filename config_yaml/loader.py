@@ -16,7 +16,7 @@ Usage::
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -226,46 +226,34 @@ def apply_yaml_to_appconfig(qcfg: QConfig, app_config: Any) -> Any:
     Returns:
         A new AppConfig with overrides applied.
     """
-    from config import AgentConfig, AppConfig, LogConfig, ModelConfig
+    new_model = replace(
+        app_config.model,
+        default_model=qcfg.model or app_config.model.default_model,
+        fallback_model=qcfg.fallback_model or app_config.model.fallback_model,
+    )
 
-    # Model overrides
-    model_kwargs: dict[str, Any] = {
-        "fast_model": app_config.model.fast_model,
-        "default_model": qcfg.model or app_config.model.default_model,
-        "reasoning_model": app_config.model.reasoning_model,
-        "api_key": app_config.model.api_key,
-        "temperature": app_config.model.temperature,
-        "max_tokens": app_config.model.max_tokens,
-    }
-
-    # Agent overrides
-    agent_kwargs: dict[str, Any] = {
-        "max_iterations": qcfg.max_steps or app_config.agent.max_iterations,
-        "stall_threshold": app_config.agent.stall_threshold,
-        "context_limit_percent": app_config.agent.context_limit_percent,
-        "tool_output_max_chars": app_config.agent.tool_output_max_chars,
-        "max_cost_per_challenge": (
+    new_agent = replace(
+        app_config.agent,
+        max_iterations=qcfg.max_steps or app_config.agent.max_iterations,
+        max_cost_per_challenge=(
             qcfg.max_cost_per_challenge
             if qcfg.max_cost_per_challenge is not None
             else app_config.agent.max_cost_per_challenge
         ),
-    }
+    )
 
-    # Log overrides
-    log_kwargs: dict[str, Any] = {
-        "level": app_config.log.level,
-        "log_dir": app_config.log.log_dir,
-        "session_dir": Path(qcfg.session_dir) if qcfg.session_dir else app_config.log.session_dir,
-    }
+    new_log = replace(
+        app_config.log,
+        session_dir=(
+            Path(qcfg.session_dir) if qcfg.session_dir else app_config.log.session_dir
+        ),
+    )
 
-    return AppConfig(
-        model=ModelConfig(**model_kwargs),
-        agent=AgentConfig(**agent_kwargs),
-        tool=app_config.tool,
-        docker=app_config.docker,
-        log=LogConfig(**log_kwargs),
-        pipeline=app_config.pipeline,
-        sandbox_mode=app_config.sandbox_mode,
+    return replace(
+        app_config,
+        model=new_model,
+        agent=new_agent,
+        log=new_log,
     )
 
 
@@ -285,7 +273,9 @@ def config_summary(qcfg: QConfig) -> dict[str, str]:
         summary["Model"] = qcfg.model
     if qcfg.max_steps:
         summary["Max steps"] = str(qcfg.max_steps)
-    summary["Parallel"] = f"{'enabled' if qcfg.parallel_enabled else 'disabled'} (max {qcfg.parallel_max})"
+    summary["Parallel"] = (
+        f"{'enabled' if qcfg.parallel_enabled else 'disabled'} (max {qcfg.parallel_max})"
+    )
     if qcfg.flag_format:
         summary["Flag format"] = qcfg.flag_format
     if qcfg.target:

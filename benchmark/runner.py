@@ -81,8 +81,8 @@ class BenchmarkRunner:
         Returns:
             List of ChallengeResult for each challenge run.
         """
-        from config import AgentConfig, AppConfig, load_config
         from agent.orchestrator import Orchestrator
+        from config import AgentConfig, AppConfig, load_config
 
         config = load_config()
         results: list[ChallengeResult] = []
@@ -112,6 +112,9 @@ class BenchmarkRunner:
                     context_limit_percent=config.agent.context_limit_percent,
                     tool_output_max_chars=config.agent.tool_output_max_chars,
                     max_cost_per_challenge=max_cost,
+                    max_cost_per_turn=config.agent.max_cost_per_turn,
+                    max_tokens_per_turn=config.agent.max_tokens_per_turn,
+                    max_cost_per_session=config.agent.max_cost_per_session,
                 ),
                 tool=config.tool,
                 docker=config.docker,
@@ -140,9 +143,8 @@ class BenchmarkRunner:
 
             # Extract answer
             if solve_result:
-                actual_answer = (
-                    solve_result.answer
-                    or (solve_result.flags[0] if solve_result.flags else "")
+                actual_answer = solve_result.answer or (
+                    solve_result.flags[0] if solve_result.flags else ""
                 )
                 actual_cost = solve_result.cost_usd
                 actual_steps = solve_result.iterations
@@ -154,19 +156,21 @@ class BenchmarkRunner:
             passed = check_answer(actual_answer, expected, match_type)
             within_budget = actual_cost <= max_cost and actual_steps <= max_steps
 
-            results.append(ChallengeResult(
-                id=challenge_id,
-                name=name,
-                category=category,
-                passed=passed,
-                within_budget=within_budget,
-                answer=actual_answer,
-                expected=expected,
-                steps=actual_steps,
-                max_steps=max_steps,
-                cost=actual_cost,
-                duration=duration,
-            ))
+            results.append(
+                ChallengeResult(
+                    id=challenge_id,
+                    name=name,
+                    category=category,
+                    passed=passed,
+                    within_budget=within_budget,
+                    answer=actual_answer,
+                    expected=expected,
+                    steps=actual_steps,
+                    max_steps=max_steps,
+                    cost=actual_cost,
+                    duration=duration,
+                )
+            )
 
         return results
 

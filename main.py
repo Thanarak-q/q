@@ -72,6 +72,9 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 context_limit_percent=config.agent.context_limit_percent,
                 tool_output_max_chars=config.agent.tool_output_max_chars,
                 max_cost_per_challenge=args.budget,
+                max_cost_per_turn=config.agent.max_cost_per_turn,
+                max_tokens_per_turn=config.agent.max_tokens_per_turn,
+                max_cost_per_session=config.agent.max_cost_per_session,
             ),
             tool=config.tool,
             docker=config.docker,
@@ -135,16 +138,18 @@ def cmd_batch(args: argparse.Namespace) -> None:
             if result.success:
                 solved_count += 1
 
-            results.append({
-                "index": idx,
-                "description": desc[:60],
-                "status": "solved" if result.success else "failed",
-                "flags": result.flags,
-                "iterations": result.iterations,
-                "category": result.category,
-                "cost": result.cost_usd,
-                "session_id": result.session_id,
-            })
+            results.append(
+                {
+                    "index": idx,
+                    "description": desc[:60],
+                    "status": "solved" if result.success else "failed",
+                    "flags": result.flags,
+                    "iterations": result.iterations,
+                    "category": result.category,
+                    "cost": result.cost_usd,
+                    "session_id": result.session_id,
+                }
+            )
     finally:
         if docker_mgr:
             docker_mgr.stop()
@@ -175,8 +180,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     _console.print(table)
     _console.print(
-        f"\nSolved: {solved_count}/{len(challenges)}  |  "
-        f"Total cost: ${total_cost:.4f}"
+        f"\nSolved: {solved_count}/{len(challenges)}  |  Total cost: ${total_cost:.4f}"
     )
 
 
@@ -245,14 +249,16 @@ def cmd_replay(args: argparse.Namespace) -> None:
 
     speed = args.speed if args.speed is not None else 0.5
 
-    _console.print(Panel(
-        f"[bold]{data.description[:120]}[/bold]\n\n"
-        f"Category: {data.category}  |  Status: {data.status}\n"
-        f"Iterations: {data.current_iteration}  |  "
-        f"Flags: {', '.join(data.flags) if data.flags else 'None'}",
-        title=f"Replay: {args.replay}",
-        style="cyan",
-    ))
+    _console.print(
+        Panel(
+            f"[bold]{data.description[:120]}[/bold]\n\n"
+            f"Category: {data.category}  |  Status: {data.status}\n"
+            f"Iterations: {data.current_iteration}  |  "
+            f"Flags: {', '.join(data.flags) if data.flags else 'None'}",
+            title=f"Replay: {args.replay}",
+            style="cyan",
+        )
+    )
 
     for step in data.steps:
         event = step.get("event", "?")
@@ -288,11 +294,13 @@ def cmd_replay(args: argparse.Namespace) -> None:
 
     _console.print()
     if data.flags:
-        _console.print(Panel(
-            f"[flag]FLAGS: {', '.join(data.flags)}[/flag]",
-            title="Result",
-            style="bold green",
-        ))
+        _console.print(
+            Panel(
+                f"[flag]FLAGS: {', '.join(data.flags)}[/flag]",
+                title="Result",
+                style="bold green",
+            )
+        )
     else:
         _console.print(Panel("No flags found.", title="Result", style="bold red"))
 
@@ -338,14 +346,16 @@ def cmd_resume(args: argparse.Namespace) -> None:
         )
         sys.exit(0)
 
-    _console.print(Panel(
-        f"[bold]{data.description[:120]}[/bold]\n\n"
-        f"Category: {data.category}  |  Status: {data.status}\n"
-        f"Iterations: {data.current_iteration}  |  "
-        f"Flags: {', '.join(data.flags) if data.flags else 'None'}",
-        title=f"Resuming: {resume_id}",
-        style="cyan",
-    ))
+    _console.print(
+        Panel(
+            f"[bold]{data.description[:120]}[/bold]\n\n"
+            f"Category: {data.category}  |  Status: {data.status}\n"
+            f"Iterations: {data.current_iteration}  |  "
+            f"Flags: {', '.join(data.flags) if data.flags else 'None'}",
+            title=f"Resuming: {resume_id}",
+            style="cyan",
+        )
+    )
 
     docker_mgr = _setup_docker(config) if not args.no_docker else None
 
@@ -364,27 +374,32 @@ def cmd_resume(args: argparse.Namespace) -> None:
 
         _console.print()
         if result.success and result.flags:
-            _console.print(Panel(
-                f"[flag]FLAGS: {', '.join(result.flags)}[/flag]",
-                title="Result",
-                style="bold green",
-            ))
+            _console.print(
+                Panel(
+                    f"[flag]FLAGS: {', '.join(result.flags)}[/flag]",
+                    title="Result",
+                    style="bold green",
+                )
+            )
         elif result.answer:
-            _console.print(Panel(
-                f"[bold]{result.answer}[/bold]",
-                title=f"Answer ({result.answer_confidence})",
-                style="green",
-            ))
+            _console.print(
+                Panel(
+                    f"[bold]{result.answer}[/bold]",
+                    title=f"Answer ({result.answer_confidence})",
+                    style="green",
+                )
+            )
         else:
-            _console.print(Panel(
-                f"[bold red]{result.summary or 'No flags found.'}[/bold red]",
-                title="Result",
-                style="red",
-            ))
+            _console.print(
+                Panel(
+                    f"[bold red]{result.summary or 'No flags found.'}[/bold red]",
+                    title="Result",
+                    style="red",
+                )
+            )
 
         _console.print(
-            f"\nIterations: {result.iterations}  |  "
-            f"Cost: ${result.cost_usd:.4f}"
+            f"\nIterations: {result.iterations}  |  Cost: ${result.cost_usd:.4f}"
         )
     finally:
         if docker_mgr:
@@ -537,14 +552,10 @@ def _setup_docker(config) -> Optional[object]:
             _console.print("[result]Docker sandbox started.[/result]")
             return mgr
         else:
-            _console.print(
-                "[info]Docker unavailable - running tools locally.[/info]"
-            )
+            _console.print("[info]Docker unavailable - running tools locally.[/info]")
             return None
     except Exception as exc:
-        _console.print(
-            f"[info]Docker setup failed ({exc}) - running locally.[/info]"
-        )
+        _console.print(f"[info]Docker setup failed ({exc}) - running locally.[/info]")
         return None
 
 
@@ -560,9 +571,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="AI-powered CTF challenge solver. "
         "Launches interactive chat mode by default.",
     )
-    parser.add_argument(
-        "--version", action="version", version=f"ctf-agent {VERSION}"
-    )
+    parser.add_argument("--version", action="version", version=f"ctf-agent {VERSION}")
 
     # Utility commands (mutually exclusive)
     group = parser.add_mutually_exclusive_group()
@@ -633,7 +642,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output file path for writeup.",
     )
     parser.add_argument(
-        "--config", "-c",
+        "--config",
+        "-c",
         metavar="FILE",
         default=None,
         help="Path to YAML config file (see configs/example.yaml).",
@@ -710,10 +720,13 @@ def main() -> None:
     if args.reindex:
         from knowledge.base import KnowledgeBase
         from knowledge.embeddings import EmbeddingStore
+
         kb = KnowledgeBase()
         store = EmbeddingStore()
         if not store.available():
-            print("ChromaDB not available. Install: pip install chromadb sentence-transformers")
+            print(
+                "ChromaDB not available. Install: pip install chromadb sentence-transformers"
+            )
             return
         count = store.reindex_all(kb._entries)
         print(f"Reindexed {count} entries into vector store")

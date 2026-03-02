@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import signal
 import sys
 import time
@@ -32,7 +33,6 @@ from ui.tree import (
 )
 from utils.cost_tracker import CostTracker
 from utils.logger import setup_logger
-
 
 # ------------------------------------------------------------------
 # Mutable chat state shared across the session
@@ -165,6 +165,7 @@ class ChatCallbacks(AgentCallbacks):
         """Stream thinking text in verbose mode."""
         if self._state.verbose:
             import sys
+
             sys.stdout.write(delta)
             sys.stdout.flush()
 
@@ -174,9 +175,7 @@ class ChatCallbacks(AgentCallbacks):
         if self._spinner:
             self._spinner.set_phase(tool_name)
         summary = summarize_tool_call(tool_name, args)
-        self._current_tool_node = self._tree.add_node(
-            summary, state=NodeState.RUNNING
-        )
+        self._current_tool_node = self._tree.add_node(summary, state=NodeState.RUNNING)
 
         if self._state.verbose:
             args_str = json.dumps(args, ensure_ascii=False, indent=2)
@@ -243,9 +242,7 @@ class ChatCallbacks(AgentCallbacks):
 
     def on_iteration(self, current: int, total: int) -> None:
         if self._state.verbose:
-            self._display.console.print(
-                f"│  [dim]--- Step {current}/{total} ---[/dim]"
-            )
+            self._display.console.print(f"│  [dim]--- Step {current}/{total} ---[/dim]")
 
     # -- Pivot / model / context -----------------------------------
 
@@ -270,9 +267,7 @@ class ChatCallbacks(AgentCallbacks):
     # -- Report ----------------------------------------------------
 
     def on_report_saved(self, path: str) -> None:
-        self._display.console.print(
-            f"[dim]\U0001f4c4 Report: {path}[/dim]"
-        )
+        self._display.console.print(f"[dim]\U0001f4c4 Report: {path}[/dim]")
 
     # -- User interaction ------------------------------------------
 
@@ -312,9 +307,7 @@ class ChatCallbacks(AgentCallbacks):
             success=True,
         )
 
-    def on_parallel_result(
-        self, index: int, success: bool, summary: str
-    ) -> None:
+    def on_parallel_result(self, index: int, success: bool, summary: str) -> None:
         icon = "\u2713" if success else "\u2717"
         self._tree.add_completed_node(
             f"Solver #{index}: {icon} {summary[:100]}",
@@ -493,11 +486,21 @@ def run_chat_turn(
     Reuses a persistent Orchestrator so conversation context is preserved
     across turns. Much cheaper than run_solve().
     """
+    if _session_guardrail_exceeded(state):
+        limit = getattr(state.config.agent, "max_cost_per_session", 0.0)
+        display.show_error(
+            f"Session budget guardrail reached (${state.total_session_cost:.4f} / "
+            f"${limit:.2f})."
+        )
+        return None
+
     # Shared cost tracker across session
     if state.session_cost_tracker is None:
         state.session_cost_tracker = CostTracker(
             budget_limit=state.config.agent.max_cost_per_challenge,
         )
+    cost_before = state.session_cost_tracker.total_cost
+    tokens_before = state.session_cost_tracker.total_tokens
 
     # Reuse the same orchestrator across chat turns for context continuity
     if state._chat_orchestrator is None:
@@ -542,14 +545,125 @@ def run_chat_turn(
         state.solving = False
 
     if result:
+        cost_delta = max(0.0, state.session_cost_tracker.total_cost - cost_before)
+        tokens_delta = max(0, state.session_cost_tracker.total_tokens - tokens_before)
+
         if callbacks._found_answer:
-            display.show_answer(
-                callbacks._found_answer, callbacks._answer_confidence
-            )
-        display.show_done(result.iterations, result.total_tokens, result.cost_usd)
-        state.total_session_cost += result.cost_usd
+            display.show_answer(callbacks._found_answer, callbacks._answer_confidence)
+        display.show_done(
+            result.iterations,
+            tokens_delta or result.total_tokens,
+            cost_delta or result.cost_usd,
+        )
+        state.total_session_cost = state.session_cost_tracker.total_cost
+        _show_guardrail_warning(
+            state,
+            display,
+            turn_cost=cost_delta or result.cost_usd,
+            turn_tokens=tokens_delta or result.total_tokens,
+        )
 
     return result
+
+
+def _looks_like_challenge_request(message: str, state: ChatState) -> bool:
+    """Heuristic challenge detector for adaptive routing."""
+    text = message.strip()
+    if not text:
+        return False
+
+    # Existing challenge context should keep using the solve pipeline.
+    if (
+        state.pending_files
+        or state.pending_url
+        or state.forced_category
+        or state.flag_pattern
+        or state.resume_session_id
+    ):
+        return True
+
+    lowered = text.lower()
+
+    challenge_keywords = (
+        "ctf",
+        "capture the flag",
+        "flag{",
+        "what is the flag",
+        "challenge",
+        "pwn",
+        "reverse",
+        "forensics",
+        "pcap",
+        "exploit",
+        "vulnerability",
+        "advent of cyber",
+        "answer the questions below",
+    )
+    if any(k in lowered for k in challenge_keywords):
+        return True
+
+    # Multi-paragraph task specs are usually challenge-style requests.
+    paragraph_count = len([p for p in re.split(r"\n\s*\n", text) if p.strip()])
+    if len(text) > 500 and paragraph_count >= 2:
+        return True
+
+    return False
+
+
+def run_adaptive_turn(
+    message: str,
+    state: ChatState,
+    display: Display,
+    callbacks: ChatCallbacks,
+    watch_mode: bool = False,
+    qi: "QInput | None" = None,
+) -> SolveResult | None:
+    """Single adaptive turn router (no hard CHAT/TASK/CHALLENGE classes)."""
+    if _looks_like_challenge_request(message, state):
+        return run_solve(
+            message,
+            state,
+            display,
+            callbacks,
+            watch_mode=watch_mode,
+            qi=qi,
+        )
+    return run_chat_turn(message, state, display, callbacks)
+
+
+def _session_guardrail_exceeded(state: ChatState) -> bool:
+    """Check whether session-level cost guardrail is exceeded."""
+    limit = getattr(state.config.agent, "max_cost_per_session", 0.0)
+    return limit > 0 and state.total_session_cost >= limit
+
+
+def _show_guardrail_warning(
+    state: ChatState,
+    display: Display,
+    turn_cost: float,
+    turn_tokens: int,
+) -> None:
+    """Display turn/session guardrail warnings."""
+    turn_cost_limit = getattr(state.config.agent, "max_cost_per_turn", 0.0)
+    turn_token_limit = getattr(state.config.agent, "max_tokens_per_turn", 0)
+    session_limit = getattr(state.config.agent, "max_cost_per_session", 0.0)
+
+    if turn_cost_limit > 0 and turn_cost > turn_cost_limit:
+        display.show_error(
+            "Turn guardrail exceeded: "
+            f"${turn_cost:.4f} > ${turn_cost_limit:.2f} (max_cost_per_turn)."
+        )
+    if turn_token_limit > 0 and turn_tokens > turn_token_limit:
+        display.show_error(
+            "Turn token guardrail exceeded: "
+            f"{turn_tokens:,} > {turn_token_limit:,} (max_tokens_per_turn)."
+        )
+    if session_limit > 0 and state.total_session_cost >= session_limit:
+        display.show_error(
+            "Session guardrail reached: "
+            f"${state.total_session_cost:.4f} / ${session_limit:.2f}. "
+            "Further turns are blocked until limits are raised."
+        )
 
 
 def run_solve(
@@ -561,6 +675,14 @@ def run_solve(
     qi: "QInput | None" = None,
 ) -> SolveResult | None:
     """Run the solve pipeline for a challenge description."""
+    if _session_guardrail_exceeded(state):
+        limit = getattr(state.config.agent, "max_cost_per_session", 0.0)
+        display.show_error(
+            f"Session budget guardrail reached (${state.total_session_cost:.4f} / "
+            f"${limit:.2f})."
+        )
+        return None
+
     # --- Team mode: delegate to TeamLeader ---
     if state.team_mode:
         return _run_team_solve(description, state, display, callbacks)
@@ -582,6 +704,8 @@ def run_solve(
         state.session_cost_tracker = CostTracker(
             budget_limit=state.config.agent.max_cost_per_challenge,
         )
+    cost_before = state.session_cost_tracker.total_cost
+    tokens_before = state.session_cost_tracker.total_tokens
 
     orch = Orchestrator(
         config=state.config,
@@ -615,8 +739,7 @@ def run_solve(
             raise KeyboardInterrupt
         _last_ctrl_c[0] = now
         display.console.print(
-            "\n  [warning]Stopping agent... "
-            "/resume to continue[/warning]"
+            "\n  [warning]Stopping agent... /resume to continue[/warning]"
         )
         orch.cancel()
 
@@ -624,7 +747,8 @@ def run_solve(
 
     if watch_mode:
         try:
-            from ui.watch import WatchDisplay, WatchCallbacks
+            from ui.watch import WatchCallbacks, WatchDisplay
+
             watch_display = WatchDisplay()
             watch_cb = WatchCallbacks(callbacks, watch_display, callbacks._tree)
             orch._cb = watch_cb  # Replace callbacks for watch mode
@@ -692,13 +816,16 @@ def run_solve(
             state.forced_category = None
 
     if result:
+        cost_delta = max(0.0, state.session_cost_tracker.total_cost - cost_before)
+        tokens_delta = max(0, state.session_cost_tracker.total_tokens - tokens_before)
+
         # Show result with mascot for flag/fail, plain for answers
         if callbacks._found_flag:
             display.show_flag_result(
                 flag=callbacks._found_flag,
                 steps=result.iterations,
-                tokens=result.total_tokens,
-                cost=result.cost_usd,
+                tokens=tokens_delta or result.total_tokens,
+                cost=cost_delta or result.cost_usd,
                 answer=callbacks._found_answer,
             )
         elif not result.success:
@@ -708,27 +835,39 @@ def run_solve(
                 )
             display.show_fail_result(
                 steps=result.iterations,
-                tokens=result.total_tokens,
-                cost=result.cost_usd,
+                tokens=tokens_delta or result.total_tokens,
+                cost=cost_delta or result.cost_usd,
             )
         else:
             if callbacks._found_answer:
                 display.show_answer(
                     callbacks._found_answer, callbacks._answer_confidence
                 )
-            display.show_done(result.iterations, result.total_tokens, result.cost_usd)
+            display.show_done(
+                result.iterations,
+                tokens_delta or result.total_tokens,
+                cost_delta or result.cost_usd,
+            )
 
         # Record in history
-        state.solve_history.append({
-            "description": description[:80],
-            "status": "solved" if result.success else "failed",
-            "flags": result.flags,
-            "category": result.category,
-            "iterations": result.iterations,
-            "cost": result.cost_usd,
-            "session_id": result.session_id,
-        })
-        state.total_session_cost += result.cost_usd
+        state.solve_history.append(
+            {
+                "description": description[:80],
+                "status": "solved" if result.success else "failed",
+                "flags": result.flags,
+                "category": result.category,
+                "iterations": result.iterations,
+                "cost": cost_delta or result.cost_usd,
+                "session_id": result.session_id,
+            }
+        )
+        state.total_session_cost = state.session_cost_tracker.total_cost
+        _show_guardrail_warning(
+            state,
+            display,
+            turn_cost=cost_delta or result.cost_usd,
+            turn_tokens=tokens_delta or result.total_tokens,
+        )
         state.last_session_id = result.session_id
 
     return result
@@ -760,8 +899,16 @@ def _run_team_solve(
     if not state.forced_category:
         try:
             from agent.classifier import classify_challenge
-            result = classify_challenge(description, state.config)
-            category = result.get("category", "misc")
+            from agent.providers import create_provider
+
+            provider = create_provider(state.config.model)
+            classified = classify_challenge(
+                description=description,
+                file_info="",
+                client=provider,
+                config=state.config,
+            )
+            category = classified.value
         except Exception:
             pass
 
@@ -777,6 +924,7 @@ def _run_team_solve(
 
     # Set up Ctrl+C handler
     import signal
+
     original_handler = signal.getsignal(signal.SIGINT)
     _last_ctrl_c: list[float] = [0.0]
 
@@ -846,17 +994,25 @@ def _run_team_solve(
         if result.summary:
             display.console.print(f"\n[dim]{result.summary}[/dim]")
 
-        state.solve_history.append({
-            "description": description[:80],
-            "status": "solved" if result.success else "failed",
-            "flags": result.flags,
-            "category": result.category,
-            "iterations": result.iterations,
-            "cost": result.cost_usd,
-            "session_id": result.session_id,
-            "team": True,
-        })
+        state.solve_history.append(
+            {
+                "description": description[:80],
+                "status": "solved" if result.success else "failed",
+                "flags": result.flags,
+                "category": result.category,
+                "iterations": result.iterations,
+                "cost": result.cost_usd,
+                "session_id": result.session_id,
+                "team": True,
+            }
+        )
         state.total_session_cost += result.cost_usd
+        _show_guardrail_warning(
+            state,
+            display,
+            turn_cost=result.cost_usd,
+            turn_tokens=result.total_tokens,
+        )
         state.last_session_id = result.session_id
 
     return result
@@ -938,9 +1094,7 @@ def chat_loop(
         display.show_info(f"Config loaded: {config_path}")
         summary = config_summary(yaml_config)
         if yaml_config.target and yaml_config.target.url:
-            display.console.print(
-                f"  [dim]Target: {yaml_config.target.url}[/dim]"
-            )
+            display.console.print(f"  [dim]Target: {yaml_config.target.url}[/dim]")
 
     # Input handler with prompt_toolkit (arrow keys, autocomplete, history)
     qi = QInput()
@@ -968,9 +1122,7 @@ def chat_loop(
 
             # EOF (Ctrl+D)
             if raw_input is None:
-                display.show_goodbye(
-                    state.total_session_cost, len(state.solve_history)
-                )
+                display.show_goodbye(state.total_session_cost, len(state.solve_history))
                 break
 
             # Ctrl+C while idle — double-tap to exit
@@ -983,8 +1135,7 @@ def chat_loop(
                     break
                 _last_idle_ctrl_c = now
                 display.console.print(
-                    "  [dim]Press Ctrl+C again to quit, "
-                    "or type a challenge.[/dim]"
+                    "  [dim]Press Ctrl+C again to quit, or type a challenge.[/dim]"
                 )
                 continue
 
@@ -999,9 +1150,7 @@ def chat_loop(
                 continue
 
             elif action["action"] == "exit":
-                display.show_goodbye(
-                    state.total_session_cost, len(state.solve_history)
-                )
+                display.show_goodbye(state.total_session_cost, len(state.solve_history))
                 break
 
             elif action["action"] == "command":
@@ -1011,81 +1160,31 @@ def chat_loop(
                 continue
 
             elif action["action"] == "chat":
-                # All non-command input goes to LLM router
-                if not state.config.model.api_key and not state.config.model.anthropic_api_key:
+                # All non-command input goes through one adaptive loop.
+                if (
+                    not state.config.model.api_key
+                    and not state.config.model.anthropic_api_key
+                ):
                     state.config = load_config()
                     state.current_model = state.config.model.default_model
-                if not state.config.model.api_key and not state.config.model.anthropic_api_key:
+                if (
+                    not state.config.model.api_key
+                    and not state.config.model.anthropic_api_key
+                ):
                     display.show_setup_needed()
                     continue
                 try:
-                    from agent.providers import create_provider
-
-                    _chat_provider = create_provider(state.config.model)
-                    _chat_model = state.config.model.fast_model
-                    _chat_resp = _chat_provider.chat(
-                        model=_chat_model,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    "You are a router. Classify the user message.\n"
-                                    "Reply ONLY with CHAT, TASK, or CHALLENGE — nothing else.\n\n"
-                                    "CHALLENGE if the message:\n"
-                                    "- Describes a CTF challenge or security task\n"
-                                    "- Mentions flags, exploits, vulnerabilities, or targets to attack\n"
-                                    "- Is a long challenge description (multi-paragraph)\n"
-                                    "- Mentions CTF, capture the flag, or pwn\n\n"
-                                    "TASK if the message:\n"
-                                    "- Mentions any filename, path, or extension\n"
-                                    "- Asks to read, open, check, list, analyze, or run something\n"
-                                    "- Contains technical instructions or tasks\n"
-                                    "- Contains a URL, IP, port, or service reference\n"
-                                    "- Asks you to do something actionable\n\n"
-                                    "CHAT if the message:\n"
-                                    "- Is purely social (greetings, how are you, thanks)\n"
-                                    "- Is a meta question about you or your capabilities\n"
-                                    "- Has no actionable task\n\n"
-                                    "Reply with one word only: CHAT, TASK, or CHALLENGE"
-                                ),
-                            },
-                            {"role": "user", "content": action["text"]},
-                        ],
-                        temperature=0.0,
-                        max_tokens=10,
+                    display.console.print()
+                    run_adaptive_turn(
+                        action["text"],
+                        state,
+                        display,
+                        callbacks,
+                        watch_mode=watch,
+                        qi=qi,
                     )
-                    _decision = (
-                        _chat_resp.get("content", "")
-                        or _chat_resp.get("message", {}).get("content", "")
-                        or ""
-                    ).strip().upper()
-
-                    if "CHALLENGE" in _decision:
-                        # Full CTF pipeline: classify → plan → solve
-                        display.console.print()
-                        run_solve(
-                            action["text"],
-                            state, display, callbacks,
-                            watch_mode=watch, qi=qi,
-                        )
-                    elif "TASK" in _decision:
-                        # Lightweight tool-using turn (no classify/plan)
-                        display.console.print()
-                        run_chat_turn(
-                            action["text"],
-                            state, display, callbacks,
-                        )
-                    else:
-                        # Chat response — route through chat_turn for context
-                        display.console.print()
-                        run_chat_turn(
-                            action["text"],
-                            state, display, callbacks,
-                        )
                 except Exception as exc:
-                    display.console.print(
-                        f"  [dim](chat error: {exc})[/dim]"
-                    )
+                    display.console.print(f"  [dim](chat error: {exc})[/dim]")
                 continue
 
     except KeyboardInterrupt:

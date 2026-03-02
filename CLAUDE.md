@@ -2,81 +2,95 @@
 
 ## What is this?
 
-Q is an AI-powered CTF challenge solver with a conversational interface. Single-agent architecture with skill-based prompts, multi-provider LLM support, and a 3-way input router.
+Q is an AI-powered CTF solver with a conversational CLI.
+
+Current architecture is single-agent with:
+- adaptive turn routing (no hard CHAT/TASK/CHALLENGE classifier)
+- full CTF solve pipeline (`classify -> plan -> solve`) when challenge-like input is detected
+- lightweight chat/tool turns for normal troubleshooting tasks
 
 ## Quick start
 
 ```bash
-# Run from ctf-agent/ directory
 python3 main.py
-
-# Or via installed command
+# or
 agentq
 ```
 
-## Architecture
+## Core architecture
 
-### Input routing (3-way)
+### Adaptive input handling
 
-All user input goes through an LLM classifier in `ui/chat.py`:
+`ui/chat.py` routes non-command input through one adaptive loop:
+- challenge-like input -> `run_solve()` -> `Orchestrator.solve()`
+- normal task/chat input -> `run_chat_turn()` -> `Orchestrator.chat_turn()`
 
-- **CHAT** — greetings, meta questions → single LLM call, no tools
-- **TASK** — "list files", "read X" → `Orchestrator.chat_turn()` (5-step ReAct, restricted tools, no classify/plan)
-- **CHALLENGE** — CTF descriptions → `Orchestrator.solve()` (full pipeline: classify → plan → solve)
+### Orchestrator
 
-### Core loop
+`agent/orchestrator.py` is the core engine:
+- `solve(...)`: classify intent/category, plan, then shared ReAct loop
+- `chat_turn(...)`: short tool-enabled conversational loop
+- `_react_loop(...)`: shared execution core for both
 
-`agent/orchestrator.py` is the main file. Two public entry points:
+### Dynamic behavior (Phase 2)
 
-- `solve(description, ...)` — full CTF pipeline (classify → plan → ReAct loop)
-- `chat_turn(user_message)` — lightweight conversational turn (5 steps, no classify/plan)
+- Missing-info detection (password/key/token) asks early before wasting steps
+- Dynamic micro-planning:
+  - short plan first
+  - plan refresh prompt after tool results
+- Response style control:
+  - quick vs balanced vs deep based on intent/user cues/confidence
+- Shell non-interactive policy:
+  - blocks obvious interactive TUI commands
+  - rewrites common commands to non-interactive flags
+  - detects timeout/prompt patterns and retries with recovery command
 
-Both reuse `_react_loop()` internally.
+## Guardrails (Phase 3)
 
-### Providers
+Configured in `~/.q/settings.json`:
+- `max_cost_per_challenge`
+- `max_cost_per_turn`
+- `max_tokens_per_turn`
+- `max_cost_per_session`
 
-`agent/providers/` — multi-provider LLM support. Router uses model name prefix:
-- `gpt-` / `o3` / `o4` → OpenAI
-- `claude-` → Anthropic
-- `gemini-` → Google (stub)
-
-### Tools
-
-11 tools in `tools/registry.py`. Chat turn uses a subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_user`.
-
-### Prompts
-
-`prompts/system.py` has two builders:
-- `build_system_prompt()` — full CTF prompt with skills, scope lock, category guides
-- `build_chat_prompt()` — lightweight conversational prompt (no CTF overhead)
-
-## Key conventions
-
-- Single agent only. Multi-agent was tried (v0.3-v0.4) and abandoned.
-- Agent MUST call `answer_user` tool to deliver its response.
-- `_react_loop()` is the shared core — never duplicate loop logic.
-- All tool deps are lazy-imported (angr, z3, pwntools, chromadb, etc.).
-- Config lives in `~/.q/settings.json`. YAML overrides via `--config`.
-- User data in `~/.q/` — never in the install directory.
+Interactive flow enforces:
+- per-turn warning if token/cost limits exceeded
+- hard block when session cost limit is reached
 
 ## Testing
 
 ```bash
-python3 -c "from prompts.system import build_chat_prompt; print(build_chat_prompt())"
-python3 -c "from tools.registry import ToolRegistry; r = ToolRegistry(); print(r.tool_names)"
+python -m unittest discover -s tests -v
 ```
 
-## File layout
+Key test files:
+- `tests/test_phase3_regressions.py`
+- `tests/test_guardrails.py`
 
-```
-agent/orchestrator.py    — Main agent loop (solve, chat_turn, _react_loop)
-agent/classifier.py      — Category + intent classification
-agent/planner.py         — Attack planning + pivoting
-agent/providers/         — LLM provider abstraction
-prompts/system.py        — System prompt builders
-tools/registry.py        — Tool registry + dispatch
-ui/chat.py               — Chat loop, 3-way router, run_solve, run_chat_turn
-ui/display.py            — Rich display helpers
-ui/commands.py           — Slash command handlers
-config.py                — AppConfig loader
-```
+E2E transcript docs:
+- `transcripts/interactive-troubleshooting.md`
+- `transcripts/ctf-solve.md`
+
+## Providers and tools
+
+### Providers
+
+Prefix-based routing in `agent/providers/router.py`:
+- `gpt-`, `o3`, `o4` -> OpenAI
+- `claude-` -> Anthropic
+- `gemini-` -> Google
+
+### Tools
+
+Tool registry: `tools/registry.py`  
+Common chat subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_user`
+
+## Key files
+
+- `agent/orchestrator.py` — solve/chat_turn + shared ReAct loop
+- `ui/chat.py` — adaptive turn router + run_solve/run_chat_turn + guardrails
+- `ui/commands.py` — slash commands (`/model`, `/config`, etc.)
+- `tools/shell.py` — non-interactive policy + recovery
+- `tools/file_manager.py` — safe workspace-bounded path resolution
+- `config_yaml/loader.py` — safe YAML overlay via dataclass replace
+- `config.py` — AppConfig + guardrail settings

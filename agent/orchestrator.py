@@ -11,15 +11,13 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
-
-from agent.providers import create_provider
-from agent.providers.base import LLMProvider
 
 from agent.classifier import (
     Category,
@@ -37,6 +35,8 @@ from agent.planner import (
     create_plan,
     select_model_for_task,
 )
+from agent.providers import create_provider
+from agent.providers.base import LLMProvider
 from config import AppConfig, load_config
 from prompts.strategies import FINAL_ATTEMPT_PROMPT
 from prompts.system import build_system_prompt
@@ -54,7 +54,6 @@ from utils.dashboard import Dashboard
 from utils.flag_extractor import extract_flags
 from utils.logger import console, get_logger
 from utils.session_manager import SessionManager, StepRecord, WorkflowState
-
 
 # ------------------------------------------------------------------
 # Callback interface for UI integration
@@ -183,9 +182,7 @@ class NullCallbacks(AgentCallbacks):
         console.print(f"\n[step]{phase}:[/step] {detail}", style="bold")
 
     def on_pivot(self, level_name: str, pivot_count: int) -> None:
-        console.print(
-            f"[info]Strategy pivot #{pivot_count}: {level_name}[/info]"
-        )
+        console.print(f"[info]Strategy pivot #{pivot_count}: {level_name}[/info]")
 
     def on_model_change(self, old_model: str, new_model: str) -> None:
         console.print(f"[info]Model: {old_model} -> {new_model}[/info]")
@@ -288,6 +285,8 @@ class Orchestrator:
 
         # Reflection loop: track consecutive low-confidence reflections
         self._consecutive_low_confidence: int = 0
+        self._response_style: str = "balanced"
+        self._missing_info_prompted: bool = False
 
         # Recent tool calls for hypothesis-driven pivoting
         self._recent_tool_calls: list[dict[str, Any]] = []
@@ -314,21 +313,29 @@ class Orchestrator:
         if yaml_config_path:
             try:
                 from config_yaml.loader import load_yaml_config
+
                 self._yaml_config = load_yaml_config(yaml_config_path)
             except Exception:
                 pass
 
         # Hooks system
         from agent.hooks import HookEngine
+
         self._hooks = HookEngine()
         _hooks_path = hooks_path  # explicit --hooks flag takes priority
         if not _hooks_path and yaml_config_path:
             try:
-                _hooks_path = self._yaml_config.hooks_path if self._yaml_config and hasattr(self._yaml_config, 'hooks_path') else None
+                _hooks_path = (
+                    self._yaml_config.hooks_path
+                    if self._yaml_config and hasattr(self._yaml_config, "hooks_path")
+                    else None
+                )
             except Exception:
                 pass
         if not _hooks_path:
-            default_hooks = Path(__file__).resolve().parent.parent / "configs" / "hooks.yaml"
+            default_hooks = (
+                Path(__file__).resolve().parent.parent / "configs" / "hooks.yaml"
+            )
             if default_hooks.exists():
                 _hooks_path = str(default_hooks)
         if _hooks_path:
@@ -402,7 +409,7 @@ class Orchestrator:
         }
         self._checkpoints.append(checkpoint)
         if len(self._checkpoints) > self._max_checkpoints:
-            self._checkpoints = self._checkpoints[-self._max_checkpoints:]
+            self._checkpoints = self._checkpoints[-self._max_checkpoints :]
 
     def rewind(self, n: int = 1) -> str:
         """Rewind agent state by n checkpoints."""
@@ -418,8 +425,7 @@ class Orchestrator:
             self._iteration = cp["iteration"]
             self._evidence.evidence = copy.deepcopy(cp["evidence"])
             return (
-                f"Rewound {n} step(s). Restored to step {cp['step']}: "
-                f"{cp['summary']}"
+                f"Rewound {n} step(s). Restored to step {cp['step']}: {cp['summary']}"
             )
         return (
             f"Rewound {n} step(s). All checkpoints consumed — "
@@ -465,6 +471,9 @@ class Orchestrator:
         Returns:
             SolveResult with success status and found flags.
         """
+        self._missing_info_prompted = False
+        description = self._request_missing_info_if_needed(description)
+        self._response_style = self._select_response_style(description, intent=None)
         self._custom_flag_pattern = flag_pattern
         self._cancelled = False
         # Don't clear _cancel_event here — it may be shared from a parent
@@ -502,7 +511,11 @@ class Orchestrator:
 
         try:
             result = self._run_pipeline(
-                description, files, target_url, flag_pattern, forced_category,
+                description,
+                files,
+                target_url,
+                flag_pattern,
+                forced_category,
                 forced_plan=forced_plan,
             )
         except KeyboardInterrupt:
@@ -602,7 +615,9 @@ class Orchestrator:
                 category = cat
                 break
 
-        self._cb.on_phase("Resume", f"Session {session_id} at iteration {self._iteration}")
+        self._cb.on_phase(
+            "Resume", f"Session {session_id} at iteration {self._iteration}"
+        )
 
         self._session.update(status="in_progress")
         result = self._react_loop(category)
@@ -652,6 +667,12 @@ class Orchestrator:
         """
         from prompts.system import build_chat_prompt
 
+        self._missing_info_prompted = False
+        user_message = self._request_missing_info_if_needed(user_message)
+        self._response_style = self._select_response_style(
+            user_message, intent=UserIntent.ANSWER_QUESTION
+        )
+
         self._cancelled = False
         self._start_time = time.time()
         self._iteration = 0
@@ -674,13 +695,24 @@ class Orchestrator:
 
         # Restricted tool set for conversational use
         self._registry = ToolRegistry.from_subset(
-            tool_names=["shell", "file_manager", "python_exec", "network", "answer_user"],
+            tool_names=[
+                "shell",
+                "file_manager",
+                "python_exec",
+                "network",
+                "answer_user",
+            ],
             docker_manager=self._docker,
             workspace=self._workspace,
         )
 
         # Conversational system prompt (no CTF skills/plans)
         self._context.set_system_prompt(build_chat_prompt())
+        self._context.add_user_message(
+            "Dynamic planning mode: start with a micro-plan (1-3 bullets) "
+            "in <think>, then refresh it after each tool result."
+        )
+        self._context.add_user_message(self._style_instruction())
         self._context.add_user_message(user_message)
 
         # Short ReAct loop
@@ -721,6 +753,10 @@ class Orchestrator:
         self._cb.on_phase("Intent", "Classifying user intent...")
         self._session.transition(WorkflowState.CLASSIFYING, "Intent classification")
         self._intent = classify_intent(description, self._provider, self._config)
+        self._response_style = self._select_response_style(
+            description,
+            intent=self._intent.intent if self._intent else None,
+        )
         self._cb.on_phase(
             "Intent",
             f"{self._intent.intent.value} — {self._intent.stop_criteria}",
@@ -777,6 +813,7 @@ class Orchestrator:
         procedural_hints = ""
         try:
             from knowledge.procedural import ProceduralMemory
+
             pmem = ProceduralMemory()
             procedural_hints = pmem.format_hints(description, category.value)
         except Exception:
@@ -798,6 +835,7 @@ class Orchestrator:
         if self._yaml_config:
             try:
                 from config_yaml.loader import inject_target_to_prompt
+
                 target_prompt = inject_target_to_prompt(self._yaml_config)
                 if target_prompt:
                     extra_ctx += "\n" + target_prompt
@@ -829,6 +867,11 @@ class Orchestrator:
         if file_info:
             initial_message += f"\n\nFiles:\n{file_info}"
         initial_message += f"\n\nAttack plan:\n{plan}"
+        initial_message += (
+            "\n\nDynamic planning mode: start with a short micro-plan "
+            "(1-3 bullets), then refresh it after each tool result."
+        )
+        initial_message += f"\n\n{self._style_instruction()}"
 
         if knowledge_hint:
             initial_message += knowledge_hint
@@ -880,7 +923,11 @@ class Orchestrator:
         # --- Phase 5: Parallel fallback (if primary solve failed) ---
         if not result.success and self._should_try_parallel(category):
             parallel_result = self._try_parallel_solve(
-                description, category, files, target_url, flag_pattern,
+                description,
+                category,
+                files,
+                target_url,
+                flag_pattern,
             )
             if parallel_result is not None and parallel_result.success:
                 return parallel_result
@@ -916,6 +963,12 @@ class Orchestrator:
             self._iteration += 1
             self._cb.on_iteration(self._iteration, max_iter)
 
+            if self._iteration == 1:
+                self._context.add_user_message(
+                    "Before your first tool call, write a short micro-plan "
+                    "(1-3 bullets) in <think>."
+                )
+
             # --- Budget check ---
             warning = self._cost.budget_warning()
             if warning:
@@ -928,12 +981,14 @@ class Orchestrator:
             if self._context.needs_summarization():
                 self._cb.on_context_summary()
                 self._context.summarize_history()
-                self._session.add_step(StepRecord(
-                    iteration=self._iteration,
-                    timestamp=time.time(),
-                    event="summary",
-                    content="Context summarized.",
-                ))
+                self._session.add_step(
+                    StepRecord(
+                        iteration=self._iteration,
+                        timestamp=time.time(),
+                        event="summary",
+                        content="Context summarized.",
+                    )
+                )
 
             # --- Graduated pivot check ---
             pivot_level = self._pivot.check_stall(self._iteration)
@@ -995,15 +1050,17 @@ class Orchestrator:
                 if self._dashboard:
                     self._dashboard.set_thinking(text_content)
 
-                self._session.add_step(StepRecord(
-                    iteration=self._iteration,
-                    timestamp=time.time(),
-                    event="llm_response",
-                    model=self._current_model,
-                    content=text_content,
-                    tokens_used=llm_tokens,
-                    cost_usd=llm_cost,
-                ))
+                self._session.add_step(
+                    StepRecord(
+                        iteration=self._iteration,
+                        timestamp=time.time(),
+                        event="llm_response",
+                        model=self._current_model,
+                        content=text_content,
+                        tokens_used=llm_tokens,
+                        cost_usd=llm_cost,
+                    )
+                )
 
             # --- Anti-soliloquy guard ---
             tool_calls = response_message.get("tool_calls")
@@ -1022,6 +1079,7 @@ class Orchestrator:
             # otherwise the next _call_llm sees broken messages → 400.
             answer_tc: dict[str, Any] | None = None
             all_found_flags: list[str] = []
+            executed_non_answer_tool = False
 
             if tool_calls:
                 for idx, tc in enumerate(tool_calls):
@@ -1042,12 +1100,13 @@ class Orchestrator:
                         continue
 
                     # Save checkpoint before tool execution
-                    func_info = tc.get('function', {})
-                    tool_name = func_info.get('name', '?')
-                    args_preview = func_info.get('arguments', '')[:60]
-                    self._save_checkpoint(f'{tool_name}: {args_preview}')
+                    func_info = tc.get("function", {})
+                    tool_name = func_info.get("name", "?")
+                    args_preview = func_info.get("arguments", "")[:60]
+                    self._save_checkpoint(f"{tool_name}: {args_preview}")
 
                     flags = self._execute_tool_call(tc)
+                    executed_non_answer_tool = True
                     if flags:
                         all_found_flags.extend(flags)
 
@@ -1061,6 +1120,13 @@ class Orchestrator:
             if all_found_flags:
                 return self._flag_found(all_found_flags, category)
 
+            if executed_non_answer_tool:
+                self._context.add_user_message(
+                    "Dynamic plan update: in your next <think>, refresh your "
+                    "micro-plan (1-3 bullets) based on the latest tool output, "
+                    "then take the next best action."
+                )
+
             # Flags found in text content
             if text_content:
                 text_flags = extract_flags(text_content, self._custom_flag_pattern)
@@ -1069,7 +1135,8 @@ class Orchestrator:
 
             # --- Thinking validation (safe to continue now) ---
             thinking_warning = self._validate_thinking(
-                text_content, self._iteration - 1,
+                text_content,
+                self._iteration - 1,
             )
             if thinking_warning == "__SHOULD_STOP__":
                 self._context.add_user_message(
@@ -1113,8 +1180,7 @@ class Orchestrator:
             summary = "Cancelled by user."
         else:
             summary = (
-                "Exhausted maximum iterations. "
-                "Here is what was discovered so far."
+                "Exhausted maximum iterations. Here is what was discovered so far."
             )
             self._session.transition(WorkflowState.FAILED, summary)
         self._cb.on_error(summary)
@@ -1169,9 +1235,7 @@ class Orchestrator:
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
-                self._log.error(
-                    f"API error (attempt {attempt + 1}/3): {exc}"
-                )
+                self._log.error(f"API error (attempt {attempt + 1}/3): {exc}")
                 # Detect broken tool_call messages and repair them
                 if "tool_call_id" in str(exc) and "did not have response" in str(exc):
                     self._repair_tool_messages()
@@ -1255,9 +1319,7 @@ class Orchestrator:
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
-                self._log.error(
-                    f"API error (attempt {attempt + 1}/3): {exc}"
-                )
+                self._log.error(f"API error (attempt {attempt + 1}/3): {exc}")
                 if "tool_call_id" in str(exc) and "did not have response" in str(exc):
                     self._repair_tool_messages()
                     continue
@@ -1292,7 +1354,8 @@ class Orchestrator:
             msg = messages[i]
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 missing = [
-                    tc for tc in msg["tool_calls"]
+                    tc
+                    for tc in msg["tool_calls"]
                     if tc.get("id") and tc["id"] not in responded
                 ]
                 if missing:
@@ -1357,7 +1420,9 @@ class Orchestrator:
         # Audit: tool call
         if self._audit:
             self._audit.log_tool_call(
-                step=self._iteration, tool=name, args=args,
+                step=self._iteration,
+                tool=name,
+                args=args,
             )
 
         # Pre-tool-call hook check
@@ -1383,7 +1448,9 @@ class Orchestrator:
 
         # Summarize long outputs to save context tokens
         summarized_output = self._output_summarizer.summarize(
-            tool=name, command=command_str, output=output,
+            tool=name,
+            command=command_str,
+            output=output,
         )
 
         # Smart response parsing for web tools (network, browser, recon)
@@ -1411,12 +1478,15 @@ class Orchestrator:
         if self._audit:
             if result.success:
                 self._audit.log_tool_result(
-                    step=self._iteration, tool=name,
-                    success=True, output_length=len(result.output),
+                    step=self._iteration,
+                    tool=name,
+                    success=True,
+                    output_length=len(result.output),
                 )
             else:
                 self._audit.log_tool_error(
-                    step=self._iteration, tool=name,
+                    step=self._iteration,
+                    tool=name,
                     error=result.error or output[:300],
                 )
 
@@ -1432,15 +1502,17 @@ class Orchestrator:
             self._dashboard.set_tool_output(name, output)
 
         # Session step
-        self._session.add_step(StepRecord(
-            iteration=self._iteration,
-            timestamp=time.time(),
-            event="tool_call",
-            model=self._current_model,
-            tool_name=name,
-            tool_args=args,
-            tool_output=output[:2000],
-        ))
+        self._session.add_step(
+            StepRecord(
+                iteration=self._iteration,
+                timestamp=time.time(),
+                event="tool_call",
+                model=self._current_model,
+                tool_name=name,
+                tool_args=args,
+                tool_output=output[:2000],
+            )
+        )
 
         # Check for flags in tool output
         flags = extract_flags(output, self._custom_flag_pattern)
@@ -1498,9 +1570,7 @@ class Orchestrator:
         if claims:
             _, unverified = self._evidence.verify_claims(claims)
             if unverified:
-                self._log.info(
-                    f"Unverified claims in answer: {unverified}"
-                )
+                self._log.info(f"Unverified claims in answer: {unverified}")
                 # Re-prompt the agent to fix unverified claims
                 self._context.add_tool_result(
                     tc_id,
@@ -1534,6 +1604,12 @@ class Orchestrator:
                                 "(Skipped — finalising answer)",
                             )
 
+        answer = self._apply_response_style(answer, confidence)
+        args["answer"] = answer
+        args["confidence"] = confidence
+        if flag:
+            args["flag"] = flag
+
         # Execute the tool so it produces output for logging
         result = self._registry.execute("answer_user", args)
         self._context.add_tool_result(tc_id, result.output)
@@ -1553,16 +1629,18 @@ class Orchestrator:
                 self._dashboard.add_flag(flag)
 
         # Session step
-        self._session.add_step(StepRecord(
-            iteration=self._iteration,
-            timestamp=time.time(),
-            event="tool_call",
-            model=self._current_model,
-            tool_name="answer_user",
-            tool_args=args,
-            tool_output=result.output[:2000],
-            flags_found=[flag] if flag else [],
-        ))
+        self._session.add_step(
+            StepRecord(
+                iteration=self._iteration,
+                timestamp=time.time(),
+                event="tool_call",
+                model=self._current_model,
+                tool_name="answer_user",
+                tool_args=args,
+                tool_output=result.output[:2000],
+                flags_found=[flag] if flag else [],
+            )
+        )
 
         self._session.transition(WorkflowState.SOLVED, f"Answer: {answer[:80]}")
 
@@ -1590,17 +1668,21 @@ class Orchestrator:
             self._audit.log_pivot(level=level.name, pivot_count=self._pivot.pivot_count)
 
         prompt = self._pivot.get_targeted_pivot(
-            level, self._recent_outputs, self._recent_tool_calls,
+            level,
+            self._recent_outputs,
+            self._recent_tool_calls,
         )
         self._context.add_user_message(prompt)
 
         # Session step
-        self._session.add_step(StepRecord(
-            iteration=self._iteration,
-            timestamp=time.time(),
-            event="pivot",
-            content=f"Pivot level: {level.name}",
-        ))
+        self._session.add_step(
+            StepRecord(
+                iteration=self._iteration,
+                timestamp=time.time(),
+                event="pivot",
+                content=f"Pivot level: {level.name}",
+            )
+        )
 
         # Model escalation
         if level == PivotLevel.MODEL_ESCALATION:
@@ -1615,13 +1697,10 @@ class Orchestrator:
         # Ask-user level
         if level == PivotLevel.ASK_USER:
             hint = self._cb.on_ask_user(
-                "The agent is stuck and needs a hint. "
-                "Please provide guidance:"
+                "The agent is stuck and needs a hint. Please provide guidance:"
             )
             if hint and hint.strip():
-                self._context.add_user_message(
-                    f"User hint: {hint.strip()}"
-                )
+                self._context.add_user_message(f"User hint: {hint.strip()}")
             else:
                 # No hint — force the agent to communicate the blocker
                 self._context.add_user_message(
@@ -1652,9 +1731,7 @@ class Orchestrator:
             for f in flags:
                 self._dashboard.add_flag(f)
 
-        self._session.transition(
-            WorkflowState.SOLVED, f"Flags: {', '.join(flags)}"
-        )
+        self._session.transition(WorkflowState.SOLVED, f"Flags: {', '.join(flags)}")
 
         return SolveResult(
             success=True,
@@ -1730,8 +1807,7 @@ class Orchestrator:
 
             # Store reflection in scratchpad
             self._context.add_scratchpad_entry(
-                f"Reflection (iter {self._iteration}): "
-                f"{reflection_text[:300]}"
+                f"Reflection (iter {self._iteration}): {reflection_text[:300]}"
             )
 
         # Parse confidence level
@@ -1766,7 +1842,7 @@ class Orchestrator:
         if "CONFIDENCE" in text_upper:
             # Check text after the word CONFIDENCE
             idx = text_upper.index("CONFIDENCE")
-            region = text_upper[idx:idx + 50]
+            region = text_upper[idx : idx + 50]
             if "LOW" in region:
                 return "low"
             if "HIGH" in region:
@@ -1841,11 +1917,13 @@ class Orchestrator:
         # Check for "DONE? yes" pattern — agent should stop
         if has_think:
             think_match = re.search(
-                r'<think>(.*?)</think>', response_text, re.DOTALL,
+                r"<think>(.*?)</think>",
+                response_text,
+                re.DOTALL,
             )
             if think_match:
                 content = think_match.group(1).lower()
-                if 'done?' in content and 'yes' in content:
+                if "done?" in content and "yes" in content:
                     return "__SHOULD_STOP__"
 
         return None
@@ -1870,7 +1948,7 @@ class Orchestrator:
 
         idx = output.index(marker)
         text_part = output[:idx].rstrip()
-        b64_part = output[idx + len(marker):]
+        b64_part = output[idx + len(marker) :]
         # b64 might have trailing whitespace or extra markers
         b64_part = b64_part.strip().split("\n")[0].strip()
         return b64_part, text_part
@@ -1892,6 +1970,7 @@ class Orchestrator:
 
         # Only try for categories that have defined approaches
         from agent.parallel import CATEGORY_APPROACHES
+
         return category.value in CATEGORY_APPROACHES
 
     def _try_parallel_solve(
@@ -2047,9 +2126,7 @@ class Orchestrator:
                 }
                 templates = suggest_templates(indicators=indicators)
                 if templates:
-                    template_hint = "\n" + format_templates_for_prompt(
-                        templates[:3]
-                    )
+                    template_hint = "\n" + format_templates_for_prompt(templates[:3])
             except Exception:
                 pass
 
@@ -2110,9 +2187,7 @@ class Orchestrator:
             lines.append(f"- {f.name} ({ftype}, {size} bytes)")
         return "\n".join(lines)
 
-    def _build_extra_context(
-        self, target_url: str | None, file_info: str
-    ) -> str:
+    def _build_extra_context(self, target_url: str | None, file_info: str) -> str:
         """Build additional context string for the system prompt."""
         parts: list[str] = []
         parts.append(f"Working directory: {self._workspace}")
@@ -2120,9 +2195,7 @@ class Orchestrator:
             parts.append(f"Target URL: {target_url}")
         if file_info:
             parts.append(f"Provided files:\n{file_info}")
-        parts.append(
-            f"Available tools: {', '.join(self._registry.list_names())}"
-        )
+        parts.append(f"Available tools: {', '.join(self._registry.list_names())}")
         return "\n".join(parts)
 
     def _get_knowledge_hints(self, description: str, category: str) -> str:
@@ -2141,7 +2214,7 @@ class Orchestrator:
 
             lines = ["\n\n## Hints from similar past solves:"]
             for s in similar:
-                lines.append(f"- \"{s['challenge'][:100]}\"")
+                lines.append(f'- "{s["challenge"][:100]}"')
                 cmds = s.get("commands", [])[:2]
                 if cmds:
                     lines.append(f"  Used: {', '.join(cmds)}")
@@ -2152,6 +2225,146 @@ class Orchestrator:
             return "\n".join(lines)
         except Exception:
             return ""
+
+    def _select_response_style(
+        self,
+        text: str,
+        intent: UserIntent | None,
+    ) -> str:
+        """Pick quick/balanced/deep response style from intent + wording."""
+        lowered = text.lower()
+        deep_cues = (
+            "deep",
+            "detailed",
+            "thorough",
+            "full analysis",
+            "step-by-step",
+            "report",
+            "root cause",
+        )
+        quick_cues = (
+            "quick",
+            "brief",
+            "short",
+            "one line",
+            "tldr",
+            "just answer",
+            "just give",
+        )
+
+        if intent == UserIntent.ANALYZE or any(c in lowered for c in deep_cues):
+            return "deep"
+        if intent == UserIntent.HELP_SOLVE:
+            return "deep"
+        if intent == UserIntent.ANSWER_QUESTION or any(
+            c in lowered for c in quick_cues
+        ):
+            return "quick"
+        if intent == UserIntent.FIND_FLAG:
+            return "quick"
+        return "balanced"
+
+    def _style_instruction(self) -> str:
+        """Instruction snippet to control final answer verbosity dynamically."""
+        if self._response_style == "quick":
+            return (
+                "Response style: QUICK. Give the direct answer first. Keep it short "
+                "(max 3-4 lines). Include only essential evidence."
+            )
+        if self._response_style == "deep":
+            return (
+                "Response style: DEEP. Provide a structured explanation with key "
+                "evidence, reasoning, and caveats."
+            )
+        return "Response style: BALANCED. Be concise but include the key reasoning."
+
+    def _apply_response_style(self, answer: str, confidence: str) -> str:
+        """Post-process answer text based on style + confidence."""
+        normalized = " ".join(answer.split())
+        if self._response_style == "quick":
+            if confidence == "low":
+                return (
+                    f"{normalized}\n"
+                    f"Confidence is low; one more verification step is recommended."
+                )
+            return normalized
+
+        if self._response_style == "deep" and confidence == "low":
+            return (
+                f"{answer}\n\n"
+                "Uncertainty note: confidence is low. Verify with one additional "
+                "independent artifact before final action."
+            )
+
+        return answer
+
+    def _detect_missing_requirements(self, text: str) -> list[str]:
+        """Heuristically detect required secrets/credentials missing from prompt."""
+        lowered = text.lower()
+        missing: list[str] = []
+
+        has_secret_value = bool(
+            re.search(
+                r"(password|passphrase|token|api[-_ ]?key|keycard)\s*[:=]\s*\S+",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+
+        needs_zip_secret = any(
+            cue in lowered
+            for cue in (
+                "password-protected",
+                "password protected",
+                "keycard",
+                "unlock the zip",
+                "zip file",
+            )
+        )
+        if needs_zip_secret and not has_secret_value:
+            missing.append("password/keycard value")
+
+        needs_api_secret = any(
+            cue in lowered
+            for cue in ("api key", "access token", "bearer token", "jwt token")
+        )
+        if needs_api_secret and not has_secret_value:
+            missing.append("API key/token value")
+
+        return missing
+
+    def _request_missing_info_if_needed(self, text: str) -> str:
+        """Ask for required missing input immediately when it is obvious."""
+        if self._missing_info_prompted:
+            return text
+
+        missing = self._detect_missing_requirements(text)
+        if not missing:
+            return text
+
+        self._missing_info_prompted = True
+
+        # Avoid blocking in non-interactive/batch usage.
+        if isinstance(self._cb, NullCallbacks):
+            self._log.info(f"Missing required info detected: {missing}")
+            return text
+
+        prompt = (
+            "Before I continue, I need missing input: "
+            f"{', '.join(missing)}. "
+            "Paste it now (or type 'skip' to continue without it)."
+        )
+        user_supplied = self._cb.on_ask_user(prompt)
+        if user_supplied and user_supplied.strip():
+            value = user_supplied.strip()
+            if value.lower() not in {"skip", "later", "no"}:
+                return f"{text}\n\nUser-provided required input:\n{value}"
+
+        self._cb.on_phase(
+            "Input",
+            "Proceeding without required secret; some steps may fail until provided.",
+        )
+        return text
 
     def _record_knowledge_and_stats(
         self, description: str, result: SolveResult
@@ -2179,12 +2392,17 @@ class Orchestrator:
         # Record procedural memory
         try:
             from knowledge.procedural import ProceduralMemory
+
             pmem = ProceduralMemory()
             if result.flags or result.answer:
                 pmem.record_success(description, result.category or "misc", steps_log)
             else:
-                pivot_reasons = self._pivot.get_reasons() if hasattr(self, '_pivot') else []
-                pmem.record_failure(description, result.category or "misc", steps_log, pivot_reasons)
+                pivot_reasons = (
+                    self._pivot.get_reasons() if hasattr(self, "_pivot") else []
+                )
+                pmem.record_failure(
+                    description, result.category or "misc", steps_log, pivot_reasons
+                )
         except Exception as e:
             self._log.debug(f"Procedural memory recording failed: {e}")
 
@@ -2192,17 +2410,19 @@ class Orchestrator:
             from stats.tracker import StatsTracker
 
             duration = time.time() - self._start_time if self._start_time else 0.0
-            StatsTracker().record({
-                "session_id": result.session_id,
-                "challenge": description[:200],
-                "category": result.category,
-                "intent": result.intent,
-                "success": result.success,
-                "steps": result.iterations,
-                "tokens": result.total_tokens,
-                "cost": round(result.cost_usd, 4),
-                "duration": round(duration, 1),
-                "model": self._current_model,
-            })
+            StatsTracker().record(
+                {
+                    "session_id": result.session_id,
+                    "challenge": description[:200],
+                    "category": result.category,
+                    "intent": result.intent,
+                    "success": result.success,
+                    "steps": result.iterations,
+                    "tokens": result.total_tokens,
+                    "cost": round(result.cost_usd, 4),
+                    "duration": round(duration, 1),
+                    "model": self._current_model,
+                }
+            )
         except Exception as exc:
             self._log.debug(f"Stats save failed: {exc}")
