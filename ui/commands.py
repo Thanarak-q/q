@@ -458,7 +458,7 @@ def _cmd_sessions(arg: str, state: ChatState, display: Display) -> bool:
 def _cmd_report(arg: str, state: ChatState, display: Display) -> bool:
     from pathlib import Path as P
 
-    report_dir = P("reports")
+    report_dir = P.home() / ".q" / "reports"
 
     if arg == "list":
         # List all reports

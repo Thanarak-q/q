@@ -17,8 +17,8 @@ from typing import Any
 class StatsTracker:
     """Track Q's performance over time."""
 
-    def __init__(self, path: str | Path = "stats/history.json") -> None:
-        self.path = Path(path)
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.path = Path(path) if path else Path.home() / ".q" / "stats" / "history.json"
         self.history: list[dict[str, Any]] = self._load()
 
     def _load(self) -> list[dict[str, Any]]:
