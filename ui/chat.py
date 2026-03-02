@@ -446,13 +446,13 @@ def _run_plan_phase(
     """
     from agent.classifier import classify_challenge
     from agent.planner import create_plan
-    from agent.providers.router import ProviderRouter
+    from agent.providers import create_provider
 
     spinner = PhaseSpinner(display.console)
     try:
         with spinner:
             spinner.set_phase("classify")
-            provider = ProviderRouter(state.config)
+            provider = create_provider(state.config.model)
             category = classify_challenge(
                 description=description,
                 file_info="",
@@ -950,9 +950,9 @@ def chat_loop(
             elif action["action"] == "chat":
                 # Lightweight LLM chat — no solve pipeline
                 try:
-                    from agent.providers.router import ProviderRouter
+                    from agent.providers import create_provider
 
-                    _chat_provider = ProviderRouter(state.config)
+                    _chat_provider = create_provider(state.config.model)
                     _chat_model = state.config.model.fast_model
                     _chat_resp = _chat_provider.chat(
                         model=_chat_model,
