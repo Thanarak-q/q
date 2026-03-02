@@ -635,6 +635,55 @@ class Orchestrator:
         return result
 
     # ------------------------------------------------------------------
+    # Lightweight conversational turn (no classify/plan)
+    # ------------------------------------------------------------------
+
+    def chat_turn(self, user_message: str) -> SolveResult:
+        """Run a lightweight conversational turn with tools.
+
+        Skips classify/plan entirely. Uses a short ReAct loop (max 5 steps)
+        with a conversational system prompt and a subset of tools.
+
+        Args:
+            user_message: The user's message/instruction.
+
+        Returns:
+            SolveResult with the answer text.
+        """
+        from prompts.system import build_chat_prompt
+
+        self._cancelled = False
+        self._start_time = time.time()
+        self._iteration = 0
+
+        # Minimal intent — treat as answer_question
+        self._intent = IntentResult(
+            intent=UserIntent.ANSWER_QUESTION,
+            stop_criteria="Answer the user's question or complete the task.",
+            specific_question=user_message,
+        )
+
+        # Restricted tool set for conversational use
+        self._registry = ToolRegistry.from_subset(
+            tool_names=["shell", "file_manager", "python_exec", "network", "answer_user"],
+            docker_manager=self._docker,
+            workspace=self._workspace,
+        )
+
+        # Conversational system prompt (no CTF skills/plans)
+        self._context.set_system_prompt(build_chat_prompt())
+        self._context.add_user_message(user_message)
+
+        # Short ReAct loop
+        result = self._react_loop(
+            category=Category.MISC,
+            max_iterations_override=5,
+        )
+        result.cost_usd = self._cost.total_cost
+        result.total_tokens = self._cost.total_tokens
+        return result
+
+    # ------------------------------------------------------------------
     # Single-agent pipeline
     # ------------------------------------------------------------------
 

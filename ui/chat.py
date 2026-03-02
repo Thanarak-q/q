@@ -479,6 +479,72 @@ def _run_plan_phase(
 # ------------------------------------------------------------------
 
 
+def run_chat_turn(
+    message: str,
+    state: ChatState,
+    display: Display,
+    callbacks: ChatCallbacks,
+) -> SolveResult | None:
+    """Run a lightweight conversational turn with tools (no classify/plan).
+
+    Creates a minimal Orchestrator, calls chat_turn(), and displays the result.
+    Much cheaper than run_solve() — suited for "list files", "read X", etc.
+    """
+    # Shared cost tracker across session
+    if state.session_cost_tracker is None:
+        state.session_cost_tracker = CostTracker(
+            budget_limit=state.config.agent.max_cost_per_challenge,
+        )
+
+    orch = Orchestrator(
+        config=state.config,
+        docker_manager=state.docker_manager,
+        workspace=state.workspace,
+        callbacks=callbacks,
+        cost_tracker=state.session_cost_tracker,
+    )
+
+    if state.solving:
+        display.show_error("Already solving. Wait or Ctrl+C to stop.")
+        return None
+
+    state.solving = True
+    callbacks.reset_for_new_solve()
+
+    # Ctrl+C handler
+    original_handler = signal.getsignal(signal.SIGINT)
+
+    def cancel_handler(signum, frame):
+        display.console.print("\n  [warning]Stopping...[/warning]")
+        orch.cancel()
+
+    signal.signal(signal.SIGINT, cancel_handler)
+
+    result = None
+    spinner = PhaseSpinner(display.console)
+    try:
+        with spinner:
+            callbacks.set_spinner(spinner)
+            result = orch.chat_turn(message)
+    except KeyboardInterrupt:
+        display.show_error("Interrupted.")
+        result = None
+    finally:
+        callbacks.set_spinner(None)
+        signal.signal(signal.SIGINT, original_handler)
+        state.solving = False
+
+    if result:
+        if callbacks._found_answer:
+            display.show_answer(
+                callbacks._found_answer, callbacks._answer_confidence
+            )
+        display.show_done(result.iterations, result.total_tokens, result.cost_usd)
+        state.total_session_cost += result.cost_usd
+
+    return result
+
+
 def run_solve(
     description: str,
     state: ChatState,
@@ -938,7 +1004,7 @@ def chat_loop(
                 continue
 
             elif action["action"] == "chat":
-                # All non-command input goes to LLM
+                # All non-command input goes to LLM router
                 if not state.config.model.api_key and not state.config.model.anthropic_api_key:
                     state.config = load_config()
                     state.current_model = state.config.model.default_model
@@ -957,11 +1023,15 @@ def chat_loop(
                                 "role": "system",
                                 "content": (
                                     "You are a router. Classify the user message.\n"
-                                    "Reply ONLY with CHAT or SOLVE — nothing else.\n\n"
-                                    "SOLVE if the message:\n"
-                                    "- Mentions any filename, path, or extension\n"
-                                    "- Asks to read, open, check, analyze, look at, or run something\n"
+                                    "Reply ONLY with CHAT, TASK, or CHALLENGE — nothing else.\n\n"
+                                    "CHALLENGE if the message:\n"
                                     "- Describes a CTF challenge or security task\n"
+                                    "- Mentions flags, exploits, vulnerabilities, or targets to attack\n"
+                                    "- Is a long challenge description (multi-paragraph)\n"
+                                    "- Mentions CTF, capture the flag, or pwn\n\n"
+                                    "TASK if the message:\n"
+                                    "- Mentions any filename, path, or extension\n"
+                                    "- Asks to read, open, check, list, analyze, or run something\n"
                                     "- Contains technical instructions or tasks\n"
                                     "- Contains a URL, IP, port, or service reference\n"
                                     "- Asks you to do something actionable\n\n"
@@ -969,7 +1039,7 @@ def chat_loop(
                                     "- Is purely social (greetings, how are you, thanks)\n"
                                     "- Is a meta question about you or your capabilities\n"
                                     "- Has no actionable task\n\n"
-                                    "Reply with one word only: CHAT or SOLVE"
+                                    "Reply with one word only: CHAT, TASK, or CHALLENGE"
                                 ),
                             },
                             {"role": "user", "content": action["text"]},
@@ -983,16 +1053,23 @@ def chat_loop(
                         or ""
                     ).strip().upper()
 
-                    if "SOLVE" in _decision:
-                        # Route to solve pipeline (has tools)
+                    if "CHALLENGE" in _decision:
+                        # Full CTF pipeline: classify → plan → solve
                         display.console.print()
                         run_solve(
                             action["text"],
                             state, display, callbacks,
                             watch_mode=watch, qi=qi,
                         )
+                    elif "TASK" in _decision:
+                        # Lightweight tool-using turn (no classify/plan)
+                        display.console.print()
+                        run_chat_turn(
+                            action["text"],
+                            state, display, callbacks,
+                        )
                     else:
-                        # Chat response — second LLM call
+                        # Pure chat response — single LLM call, no tools
                         _chat_resp2 = _chat_provider.chat(
                             model=_chat_model,
                             messages=[

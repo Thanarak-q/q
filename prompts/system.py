@@ -31,6 +31,21 @@ def get_category_prompt(category: str) -> str:
     return ""
 
 
+def build_chat_prompt() -> str:
+    """Build a lightweight conversational system prompt (no CTF skills/plans)."""
+    return (
+        "You are q, a helpful AI assistant with access to tools.\n\n"
+        "## How to behave\n"
+        "- Follow instructions directly. If asked to read a file, read it. "
+        "If asked to list files, list them.\n"
+        "- Be conversational — explain what you're doing and what you found.\n"
+        "- Use tools when the task requires them (shell, file operations, etc.).\n"
+        "- When you're done, call answer_user with your complete response.\n"
+        "- Keep responses concise and helpful.\n"
+        "- Do NOT create attack plans or classify anything as a CTF category.\n"
+    )
+
+
 def build_system_prompt(
     category: str = "",
     extra_context: str = "",
