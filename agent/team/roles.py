@@ -15,6 +15,8 @@ class TeammateConfig:
     skills: list[str] = field(default_factory=list)
     model: str = ""  # Empty = use default
     max_steps: int = 10
+    can_create_tasks: bool = True  # Whether teammate can dynamically add tasks
+    task_types: list[str] = field(default_factory=list)  # What task kinds this teammate suits
 
 
 TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
@@ -33,6 +35,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Report ALL findings clearly — another agent will exploit them."
             ),
             skills=["web"],
+            task_types=["recon", "enumeration"],
         ),
         TeammateConfig(
             name="exploit",
@@ -47,6 +50,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Focus on what the recon agent found — don't repeat their work."
             ),
             skills=["web"],
+            task_types=["exploit", "auth_bypass"],
         ),
     ],
     "pwn": [
@@ -63,6 +67,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Report findings with exact offsets — another agent will write the exploit."
             ),
             skills=["pwn", "reverse"],
+            task_types=["analysis", "recon"],
         ),
         TeammateConfig(
             name="exploit",
@@ -78,6 +83,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Get the flag."
             ),
             skills=["pwn"],
+            task_types=["exploit", "rop", "shellcode"],
         ),
     ],
     "crypto": [
@@ -94,6 +100,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Report your analysis — another agent will implement the attack."
             ),
             skills=["crypto"],
+            task_types=["analysis", "recon"],
         ),
         TeammateConfig(
             name="solver",
@@ -108,6 +115,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Get the flag."
             ),
             skills=["crypto"],
+            task_types=["exploit", "solve", "decrypt"],
         ),
     ],
     "forensics": [
@@ -124,6 +132,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Report all findings — another agent will extract the flag."
             ),
             skills=["forensics"],
+            task_types=["analysis", "recon"],
         ),
         TeammateConfig(
             name="extractor",
@@ -138,6 +147,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Get the flag."
             ),
             skills=["forensics"],
+            task_types=["exploit", "extract", "decode"],
         ),
     ],
     "reverse": [
@@ -154,6 +164,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Report the algorithm — another agent will solve it."
             ),
             skills=["reverse"],
+            task_types=["analysis", "recon"],
         ),
         TeammateConfig(
             name="solver",
@@ -168,6 +179,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Get the flag."
             ),
             skills=["reverse"],
+            task_types=["exploit", "solve", "keygen"],
         ),
     ],
     "misc": [
@@ -177,6 +189,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
             max_steps=10,
             prompt="Solve this challenge. Try the most obvious approach first.",
             skills=["misc"],
+            task_types=["solve", "exploit"],
         ),
         TeammateConfig(
             name="solver_b",
@@ -184,6 +197,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
             max_steps=10,
             prompt="Solve this challenge. Try an unconventional or creative approach.",
             skills=["misc"],
+            task_types=["solve", "exploit"],
         ),
     ],
     "osint": [
@@ -199,6 +213,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Report all findings."
             ),
             skills=["osint"],
+            task_types=["recon", "research"],
         ),
         TeammateConfig(
             name="analyst",
@@ -213,6 +228,7 @@ TEAM_PRESETS: dict[str, list[TeammateConfig]] = {
                 "Get the flag."
             ),
             skills=["osint"],
+            task_types=["analysis", "solve"],
         ),
     ],
 }

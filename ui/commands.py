@@ -40,6 +40,7 @@ COMMAND_HELP: dict[str, str] = {
     "/team on, /team off": "Enable/disable team solving",
     "/team tasks": "Show team task board",
     "/team messages": "Show team message log",
+    "/team agents": "Show active teammates with status",
     # Plan mode
     "/plan [on|off]": "Toggle plan-before-solve mode (shows attack plan for approval)",
     # Settings
@@ -932,8 +933,8 @@ def _cmd_team(arg: str, state: ChatState, display: Display) -> bool:
     # /team tasks — show task board
     if subcmd == "tasks":
         leader = getattr(state, "_team_leader", None)
-        if leader and hasattr(leader, "_last_taskboard"):
-            display.console.print(leader._last_taskboard.summary())
+        if leader and leader._taskboard:
+            display.console.print(leader._taskboard.summary())
         else:
             display.show_info("No active team. Start a team solve first.")
         return False
@@ -941,8 +942,8 @@ def _cmd_team(arg: str, state: ChatState, display: Display) -> bool:
     # /team messages — show message log
     if subcmd == "messages":
         leader = getattr(state, "_team_leader", None)
-        if leader and hasattr(leader, "_last_msgbus"):
-            msgs = leader._last_msgbus.get_log(limit=20)
+        if leader and leader._msgbus:
+            msgs = leader._msgbus.get_log(limit=20)
             if not msgs:
                 display.show_info("No messages yet.")
                 return False
@@ -957,6 +958,19 @@ def _cmd_team(arg: str, state: ChatState, display: Display) -> bool:
             display.show_info("No active team.")
         return False
 
+    # /team agents — show active teammates with status
+    if subcmd == "agents":
+        leader = getattr(state, "_team_leader", None)
+        if leader:
+            teammates = leader.get_active_teammates()
+            if not teammates:
+                display.show_info("No teammates spawned.")
+                return False
+            display.show_team_status({"teammates": teammates})
+        else:
+            display.show_info("No active team.")
+        return False
+
     # /team (no args) — show status
     status = "ON" if getattr(state, "team_mode", False) else "OFF"
     display.console.print(
@@ -965,6 +979,7 @@ def _cmd_team(arg: str, state: ChatState, display: Display) -> bool:
         f"  [dim]/team off      Disable team solving[/dim]\n"
         f"  [dim]/team tasks    Show task board[/dim]\n"
         f"  [dim]/team messages Show message log[/dim]\n"
+        f"  [dim]/team agents   Show active teammates[/dim]\n"
     )
     return False
 

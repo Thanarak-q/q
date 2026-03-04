@@ -19,8 +19,8 @@ class TeamCallbacks(AgentCallbacks):
     """Callbacks for a teammate agent.
 
     Forwards important events (flags, answers, discoveries) to the
-    MessageBus so the team leader can react. Minimal logging for
-    non-critical events.
+    MessageBus so the team leader can react. Exposes task creation
+    for dynamic follow-up tasks.
     """
 
     def __init__(
@@ -35,7 +35,7 @@ class TeamCallbacks(AgentCallbacks):
         self._taskboard = taskboard
         self._verbose = verbose
 
-    # ── Critical events → forward to lead ──────────────────────────
+    # ── Critical events -> forward to lead ──────────────────────────
 
     def on_flag_found(self, flag: str) -> None:
         self._msgbus.send(self._name, "lead", flag, "flag")
@@ -50,7 +50,7 @@ class TeamCallbacks(AgentCallbacks):
     def on_error(self, message: str) -> None:
         self._msgbus.send(self._name, "lead", f"Error: {message}", "info")
 
-    # ── Tool events → forward discoveries ──────────────────────────
+    # ── Tool events -> forward discoveries ──────────────────────────
 
     def on_tool_result(self, tool_name: str, output: str, success: bool) -> None:
         if not success:
@@ -64,7 +64,32 @@ class TeamCallbacks(AgentCallbacks):
                     "discovery",
                 )
 
-    # ── Informational events → log only ────────────────────────────
+    # ── Dynamic task creation ────────────────────────────────────
+
+    def create_task(
+        self,
+        subject: str,
+        description: str = "",
+        blocked_by: list[str] | None = None,
+    ) -> str:
+        """Create a follow-up task on the shared board.
+
+        Returns the new task ID. Notifies the leader about the new task.
+        """
+        task = self._taskboard.create(
+            subject=subject,
+            description=description,
+            blocked_by=blocked_by,
+            metadata={"created_by": self._name},
+        )
+        self._msgbus.send(
+            self._name, "lead",
+            f"{task.id}: {subject}",
+            "task_created",
+        )
+        return task.id
+
+    # ── Informational events -> log only ────────────────────────────
 
     def on_thinking(self, text: str) -> None:
         if self._verbose:
@@ -104,5 +129,5 @@ class TeamCallbacks(AgentCallbacks):
         pass
 
     def on_ask_user(self, prompt: str) -> str:
-        # Teammates can't ask the user — return empty hint
+        # Teammates can't ask the user -- return empty hint
         return ""

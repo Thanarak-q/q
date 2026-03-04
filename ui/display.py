@@ -27,6 +27,7 @@ CHAT_THEME = Theme(
         "command": "dim",
         "success": "bold green",
         "warning": "bold yellow",
+        "idle": "yellow",
     }
 )
 
@@ -433,6 +434,7 @@ class Display:
                 "running": "green",
                 "done": "dim",
                 "waiting": "yellow",
+                "idle": "yellow",
             }.get(mate.get("status", ""), "dim")
             table.add_row(
                 mate.get("name", "?"),
