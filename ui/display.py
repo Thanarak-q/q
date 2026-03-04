@@ -97,7 +97,8 @@ class Display:
         title = f" q v{VERSION} "
         dashes = max(0, box_w - 3 - len(title))
         hdr = Text()
-        hdr.append(f"\u256d\u2500{title}{'\u2500' * dashes}\u256e", style=BOX)
+        bar = "\u2500" * dashes
+        hdr.append(f"\u256d\u2500{title}{bar}\u256e", style=BOX)
         self.console.print(hdr)
 
         # Content lines
@@ -129,7 +130,8 @@ class Display:
 
         # Footer
         ftr = Text()
-        ftr.append(f"\u2570{'\u2500' * (box_w - 2)}\u256f", style=BOX)
+        bar = "\u2500" * (box_w - 2)
+        ftr.append(f"\u2570{bar}\u256f", style=BOX)
         self.console.print(ftr)
         self.console.print()
 
