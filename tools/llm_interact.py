@@ -220,6 +220,15 @@ class LLMInteractTool(BaseTool):
             return f"[ERROR] Unknown action: {action}"
         return handler(**kwargs)
 
+    @staticmethod
+    def _http_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Extract only the HTTP-relevant kwargs for _do_request."""
+        keys = (
+            "http_method", "request_format", "prompt_field",
+            "response_field", "headers", "extra_body",
+        )
+        return {k: kwargs[k] for k in keys if k in kwargs}
+
     def _send_prompt(self, **kwargs: Any) -> str:
         """Send a single prompt to the target AI (no history tracking)."""
         target_url = kwargs.get("target_url", "")
@@ -229,13 +238,19 @@ class LLMInteractTool(BaseTool):
         if not prompt:
             return "[ERROR] 'prompt' is required."
 
-        raw_response, extracted = self._do_request(target_url, prompt, **kwargs)
+        raw_response, extracted = self._do_request(target_url, prompt, **self._http_kwargs(kwargs))
 
-        # Analyze for flags
+        # Check for plaintext flags first
         flags = self._detect_flags(extracted)
         result = f"Response:\n{extracted}"
         if flags:
             result += f"\n\n[FLAG DETECTED] {', '.join(flags)}"
+            return result
+
+        # Auto-analyze for encoded flags (base64, hex, rot13, reversed)
+        analysis = self._deep_scan(extracted)
+        if analysis:
+            result += f"\n\n{analysis}"
         return result
 
     def _multi_turn(self, **kwargs: Any) -> str:
@@ -254,7 +269,7 @@ class LLMInteractTool(BaseTool):
         self._sessions[target_url].append({"role": "user", "content": prompt})
 
         # Include conversation history in extra_body if the API supports it
-        raw_response, extracted = self._do_request(target_url, prompt, **kwargs)
+        raw_response, extracted = self._do_request(target_url, prompt, **self._http_kwargs(kwargs))
 
         self._sessions[target_url].append({"role": "assistant", "content": extracted})
 
@@ -264,6 +279,10 @@ class LLMInteractTool(BaseTool):
         result = f"[Turn {turn_num}] Response:\n{extracted}"
         if flags:
             result += f"\n\n[FLAG DETECTED] {', '.join(flags)}"
+            return result
+        analysis = self._deep_scan(extracted)
+        if analysis:
+            result += f"\n\n{analysis}"
         return result
 
     def _analyze_response(self, **kwargs: Any) -> str:
@@ -353,16 +372,22 @@ class LLMInteractTool(BaseTool):
 
         results: list[str] = []
         for i, payload in enumerate(payloads, 1):
-            _raw, extracted = self._do_request(target_url, payload.prompt, **kwargs)
+            _raw, extracted = self._do_request(target_url, payload.prompt, **self._http_kwargs(kwargs))
             flags = self._detect_flags(extracted)
+            deep = self._deep_scan(extracted) if not flags else ""
 
-            status = "FLAG!" if flags else "no flag"
+            found = flags or ("FLAG DETECTED" in deep)
+            status = "FLAG!" if found else "no flag"
             summary = extracted[:120].replace("\n", " ")
             results.append(f"  [{i}/{len(payloads)}] {payload.name} ({payload.category}): {status}")
             results.append(f"         {summary}")
 
             if flags:
                 results.append(f"\n[FLAG DETECTED] {', '.join(flags)}")
+                results.append(f"Payload: {payload.prompt[:200]}")
+                return "\n".join(results)
+            if "FLAG DETECTED" in deep:
+                results.append(f"\n{deep}")
                 results.append(f"Payload: {payload.prompt[:200]}")
                 return "\n".join(results)
 
@@ -525,17 +550,23 @@ class LLMInteractTool(BaseTool):
         all_responses: list[str] = []
 
         for i, payload in enumerate(sequence, 1):
-            _raw, extracted = self._do_request(target_url, payload.prompt, **kwargs)
+            _raw, extracted = self._do_request(target_url, payload.prompt, **self._http_kwargs(kwargs))
             flags = self._detect_flags(extracted)
+            deep = self._deep_scan(extracted) if not flags else ""
             all_responses.append(extracted)
 
-            status = "FLAG!" if flags else "no flag"
+            found = flags or ("FLAG DETECTED" in deep)
+            status = "FLAG!" if found else "no flag"
             summary = extracted[:120].replace("\n", " ")
             results.append(f"  [{i}] {payload.name}: {status}")
             results.append(f"      {summary}")
 
             if flags:
                 results.append(f"\n[FLAG DETECTED] {', '.join(flags)}")
+                results.append(f"Winning payload ({payload.category}): {payload.prompt[:200]}")
+                return "\n".join(results)
+            if "FLAG DETECTED" in deep:
+                results.append(f"\n{deep}")
                 results.append(f"Winning payload ({payload.category}): {payload.prompt[:200]}")
                 return "\n".join(results)
 
@@ -740,3 +771,52 @@ class LLMInteractTool(BaseTool):
                 if value not in found:
                     found.append(value)
         return found
+
+    @staticmethod
+    def _deep_scan(text: str) -> str:
+        """Quick scan for encoded flags (base64, hex, rot13, reversed).
+
+        Returns a summary string if anything suspicious is found, or empty string.
+        """
+        import base64
+
+        findings: list[str] = []
+
+        # Base64 detection
+        b64_pat = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
+        for match in b64_pat.finditer(text):
+            try:
+                decoded = base64.b64decode(match.group()).decode("utf-8", errors="replace")
+                if decoded.isprintable() and len(decoded) > 3:
+                    sub_flags = LLMInteractTool._detect_flags(decoded)
+                    if sub_flags:
+                        findings.append(f"[FLAG DETECTED in base64] {', '.join(sub_flags)}")
+            except Exception:
+                pass
+
+        # Hex detection
+        hex_pat = re.compile(r"(?:0x)?([0-9a-fA-F]{20,})")
+        for match in hex_pat.finditer(text):
+            try:
+                decoded = bytes.fromhex(match.group(1)).decode("utf-8", errors="replace")
+                sub_flags = LLMInteractTool._detect_flags(decoded)
+                if sub_flags:
+                    findings.append(f"[FLAG DETECTED in hex] {', '.join(sub_flags)}")
+            except Exception:
+                pass
+
+        # ROT13
+        rot13 = text.translate(str.maketrans(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+            "NOPQRSTUVWXYZABCDEFGHIJKLMnopqrstuvwxyzabcdefghijklm",
+        ))
+        rot13_flags = LLMInteractTool._detect_flags(rot13)
+        if rot13_flags:
+            findings.append(f"[FLAG DETECTED in ROT13] {', '.join(rot13_flags)}")
+
+        # Reversed
+        rev_flags = LLMInteractTool._detect_flags(text[::-1])
+        if rev_flags:
+            findings.append(f"[FLAG DETECTED reversed] {', '.join(rev_flags)}")
+
+        return "\n".join(findings)
