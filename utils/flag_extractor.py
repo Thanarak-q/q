@@ -20,6 +20,8 @@ DEFAULT_FLAG_PATTERNS: list[str] = [
     rf"FLAG\{{{_VALID_FLAG_CONTENT}\}}",
     rf"ctf\{{{_VALID_FLAG_CONTENT}\}}",
     rf"CTF\{{{_VALID_FLAG_CONTENT}\}}",
+    rf"NCSA\{{{_VALID_FLAG_CONTENT}\}}",
+    rf"ncsa\{{{_VALID_FLAG_CONTENT}\}}",
     rf"htb\{{{_VALID_FLAG_CONTENT}\}}",
     rf"HTB\{{{_VALID_FLAG_CONTENT}\}}",
     rf"picoCTF\{{{_VALID_FLAG_CONTENT}\}}",

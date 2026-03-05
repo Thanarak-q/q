@@ -27,6 +27,8 @@ COMMAND_HELP: dict[str, str] = {
     "/stats": "Performance dashboard",
     "/benchmark <file>": "Run benchmark challenges from a JSON file",
     "/workflow [id]": "Show workflow state history",
+    # AI CTF
+    "/flag [pattern]": "Set flag format (e.g. NCSA{...}) or show current pattern",
     # Session
     "/file <path>": "Load a file into the workspace",
     "/url <url>": "Set the target URL for the next challenge",
@@ -156,6 +158,7 @@ def handle_command(
         "/settings": _cmd_settings,
         "/team": _cmd_team,
         "/plan": _cmd_plan,
+        "/flag": _cmd_flag,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -1182,6 +1185,59 @@ def _cmd_plan(arg: str, state: ChatState, display: Display) -> bool:
     elif a == "off":
         state.plan_mode = False
         display.show_info("Plan mode OFF — solve immediately without planning.")
+    return False
+
+
+def _cmd_flag(arg: str, state: ChatState, display: Display) -> bool:
+    if not arg:
+        if state.flag_pattern:
+            display.console.print(
+                f"\n  Flag pattern: [cyan]{state.flag_pattern}[/cyan]\n"
+                f"  [dim]Use /flag <pattern> to change, /flag off to clear.[/dim]\n"
+            )
+        else:
+            # Interactive selector for common flag formats
+            from ui.selector import interactive_select
+
+            options = [
+                ("auto", "auto-detect (all known formats)"),
+                (r"NCSA\{[^}]+\}", "NCSA{...}"),
+                (r"flag\{[^}]+\}", "flag{...}"),
+                (r"FLAG\{[^}]+\}", "FLAG{...}"),
+                (r"ctf\{[^}]+\}", "ctf{...}"),
+                (r"CTF\{[^}]+\}", "CTF{...}"),
+                ("custom", "custom regex..."),
+            ]
+            choice = interactive_select(
+                title="Select flag format:",
+                options=options,
+                current="auto",
+            )
+            if choice is None or choice == "auto":
+                return False
+            if choice == "custom":
+                display.show_info("Use: /flag <regex>  e.g. /flag NCSA\\{[^}]+\\}")
+                return False
+            state.flag_pattern = choice
+            display.show_info(f"Flag pattern set: {choice}")
+        return False
+
+    a = arg.strip()
+    if a.lower() in ("off", "none", "clear", "auto"):
+        state.flag_pattern = None
+        display.show_info("Flag pattern cleared (using auto-detect).")
+        return False
+
+    # Validate the regex
+    import re
+    try:
+        re.compile(a)
+    except re.error as exc:
+        display.show_error(f"Invalid regex: {exc}")
+        return False
+
+    state.flag_pattern = a
+    display.show_info(f"Flag pattern set: {a}")
     return False
 
 

@@ -39,17 +39,23 @@ class LLMInteractTool(BaseTool):
     description = (
         "Interact with a target AI/LLM system. Use for AI security challenges "
         "that involve prompt injection, jailbreaking, or secret extraction. "
-        "Supports single prompts and multi-turn conversations with automatic "
-        "session tracking. Analyzes responses for leaked flags/secrets."
+        "Supports single prompts, multi-turn conversations, automated payload "
+        "spraying, and response analysis. Tracks request count per target."
     )
     parameters = [
         ToolParameter(
             name="action",
             type="string",
-            description="Action to perform.",
+            description=(
+                "Action to perform. 'spray' cycles through pre-built prompt injection "
+                "payloads automatically and returns the first response containing a flag. "
+                "'auto_attack' runs an escalating sequence of attacks."
+            ),
             enum=[
                 "send_prompt",
                 "multi_turn",
+                "spray",
+                "auto_attack",
                 "analyze_response",
                 "reset_session",
                 "show_history",
@@ -127,6 +133,22 @@ class LLMInteractTool(BaseTool):
             description="Raw text to analyze (for analyze_response action).",
             required=False,
         ),
+        ToolParameter(
+            name="payload_category",
+            type="string",
+            description=(
+                "Filter payloads by category for 'spray' action. "
+                "Options: direct, override, roleplay, encoding, indirect, "
+                "sidechannel, context. Default: all."
+            ),
+            required=False,
+        ),
+        ToolParameter(
+            name="max_attempts",
+            type="string",
+            description="Max number of payloads to try for spray/auto_attack. Default: 10.",
+            required=False,
+        ),
     ]
 
     def __init__(self) -> None:
@@ -137,6 +159,8 @@ class LLMInteractTool(BaseTool):
         self._sessions: dict[str, list[dict[str, str]]] = {}
         # Persistent HTTP client for cookie/session handling
         self._http_client: httpx.Client | None = None
+        # Request counter per target URL
+        self._request_counts: dict[str, int] = {}
 
     def _get_client(self) -> httpx.Client:
         if self._http_client is None or self._http_client.is_closed:
@@ -153,6 +177,8 @@ class LLMInteractTool(BaseTool):
         dispatch = {
             "send_prompt": self._send_prompt,
             "multi_turn": self._multi_turn,
+            "spray": self._spray,
+            "auto_attack": self._auto_attack,
             "analyze_response": self._analyze_response,
             "reset_session": self._reset_session,
             "show_history": self._show_history,
@@ -282,6 +308,80 @@ class LLMInteractTool(BaseTool):
             return "No flags, secrets, or suspicious patterns detected in the text."
         return "Analysis results:\n" + "\n".join(f"  - {f}" for f in findings)
 
+    def _spray(self, **kwargs: Any) -> str:
+        """Spray pre-built payloads against the target, stop on first flag."""
+        target_url = kwargs.get("target_url", "")
+        if not target_url:
+            return "[ERROR] 'target_url' is required."
+
+        from tools.ai_payloads import get_payloads
+
+        category = kwargs.get("payload_category", None)
+        max_attempts = int(kwargs.get("max_attempts", "10") or "10")
+        payloads = get_payloads(category)[:max_attempts]
+
+        results: list[str] = []
+        for i, payload in enumerate(payloads, 1):
+            _raw, extracted = self._do_request(target_url, payload.prompt, **kwargs)
+            flags = self._detect_flags(extracted)
+
+            status = "FLAG!" if flags else "no flag"
+            summary = extracted[:120].replace("\n", " ")
+            results.append(f"  [{i}/{len(payloads)}] {payload.name} ({payload.category}): {status}")
+            results.append(f"         {summary}")
+
+            if flags:
+                results.append(f"\n[FLAG DETECTED] {', '.join(flags)}")
+                results.append(f"Payload: {payload.prompt[:200]}")
+                return "\n".join(results)
+
+        return (
+            f"Sprayed {len(payloads)} payloads — no flag detected.\n"
+            + "\n".join(results)
+            + "\n\nTry: encoding bypass, multi-turn, or side-channel extraction."
+        )
+
+    def _auto_attack(self, **kwargs: Any) -> str:
+        """Run an escalating sequence of attacks against the target."""
+        target_url = kwargs.get("target_url", "")
+        if not target_url:
+            return "[ERROR] 'target_url' is required."
+
+        from tools.ai_payloads import get_escalation_sequence
+
+        max_attempts = int(kwargs.get("max_attempts", "13") or "13")
+        sequence = get_escalation_sequence()[:max_attempts]
+
+        results: list[str] = []
+        all_responses: list[str] = []
+
+        for i, payload in enumerate(sequence, 1):
+            _raw, extracted = self._do_request(target_url, payload.prompt, **kwargs)
+            flags = self._detect_flags(extracted)
+            all_responses.append(extracted)
+
+            status = "FLAG!" if flags else "no flag"
+            summary = extracted[:120].replace("\n", " ")
+            results.append(f"  [{i}] {payload.name}: {status}")
+            results.append(f"      {summary}")
+
+            if flags:
+                results.append(f"\n[FLAG DETECTED] {', '.join(flags)}")
+                results.append(f"Winning payload ({payload.category}): {payload.prompt[:200]}")
+                return "\n".join(results)
+
+        # No flag found — analyze all responses for partial leaks
+        combined = "\n---\n".join(all_responses)
+        analysis = self._analyze_response(text=combined)
+
+        return (
+            f"Auto-attack: {len(sequence)} payloads tried — no direct flag.\n"
+            + "\n".join(results)
+            + f"\n\n{analysis}"
+            + "\n\nSuggestions: try side-channel (character-by-character), "
+            "multi-turn trust-building, or custom encoding bypass."
+        )
+
     def _reset_session(self, **kwargs: Any) -> str:
         """Reset conversation history and HTTP session."""
         target_url = kwargs.get("target_url", "")
@@ -318,11 +418,14 @@ class LLMInteractTool(BaseTool):
         elif target_url:
             return f"No session for {target_url}."
         else:
-            if not self._sessions:
+            if not self._sessions and not self._request_counts:
                 return "No active sessions."
             lines = []
-            for url, history in self._sessions.items():
-                lines.append(f"  {url}: {len(history)} messages")
+            all_urls = set(list(self._sessions.keys()) + list(self._request_counts.keys()))
+            for url in sorted(all_urls):
+                msgs = len(self._sessions.get(url, []))
+                reqs = self._request_counts.get(url, 0)
+                lines.append(f"  {url}: {msgs} messages, {reqs} total requests")
             return "Active sessions:\n" + "\n".join(lines)
 
     def _do_request(
@@ -357,6 +460,9 @@ class LLMInteractTool(BaseTool):
                 extra_body = json.loads(raw_extra_body)
             except json.JSONDecodeError:
                 pass
+
+        # Track request count
+        self._request_counts[target_url] = self._request_counts.get(target_url, 0) + 1
 
         client = self._get_client()
 
