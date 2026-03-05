@@ -120,9 +120,17 @@ class ChatCallbacks(AgentCallbacks):
         self._answer_confidence = ""
         self._root_set = False
 
-    def set_spinner(self, spinner: PhaseSpinner | None) -> None:
-        """Attach a PhaseSpinner so callbacks can update it."""
+    def set_spinner(self, spinner: object | None) -> None:
+        """Attach a spinner so callbacks can update phase text.
+
+        If the spinner supports clear_for_output/done_output (LiveSpinner),
+        it is also wired to the tree for flicker-free output.
+        """
         self._spinner = spinner
+        if spinner and hasattr(spinner, "clear_for_output"):
+            self._tree.set_spinner(spinner)
+        else:
+            self._tree.set_spinner(None)
 
     # -- Phase / structure -----------------------------------------
 
@@ -173,6 +181,9 @@ class ChatCallbacks(AgentCallbacks):
     def on_tool_call(self, tool_name: str, args: dict) -> None:
         if self._spinner:
             self._spinner.set_phase(tool_name)
+        if not self._root_set:
+            self._tree.set_root("Working")
+            self._root_set = True
         summary = summarize_tool_call(tool_name, args)
         self._current_tool_node = self._tree.add_node(summary, state=NodeState.RUNNING)
 
@@ -549,6 +560,25 @@ def _plan_approval_loop(
 
 
 # ------------------------------------------------------------------
+# Spinner selection
+# ------------------------------------------------------------------
+
+
+def _make_spinner(state: ChatState, display: Display) -> object:
+    """Pick the right spinner for the current mode.
+
+    Non-verbose: LiveSpinner (ANSI-based, coexists with TaskTree output).
+    Verbose: PhaseSpinner (Rich Status, coexists with Rich Console prints).
+    """
+    if state.verbose:
+        return PhaseSpinner(display.console)
+
+    from ui.spinner import LiveSpinner
+
+    return LiveSpinner()
+
+
+# ------------------------------------------------------------------
 # Solve logic
 # ------------------------------------------------------------------
 
@@ -609,7 +639,7 @@ def run_chat_turn(
     signal.signal(signal.SIGINT, cancel_handler)
 
     result = None
-    spinner = PhaseSpinner(display.console)
+    spinner = _make_spinner(state, display)
     try:
         with spinner:
             callbacks.set_spinner(spinner)
@@ -860,7 +890,7 @@ def run_solve(
             watch_mode = False
 
     if not watch_mode:
-        spinner = PhaseSpinner(display.console)
+        spinner = _make_spinner(state, display)
         try:
             with spinner:
                 callbacks.set_spinner(spinner)

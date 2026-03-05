@@ -3,11 +3,17 @@
 Provides context-manager based spinners for tool execution and
 LLM calls, plus a persistent PhaseSpinner that updates its text
 based on the current agent phase/tool.
+
+LiveSpinner is an ANSI-based spinner that coexists with TaskTree
+direct-stdout output by pausing/resuming around writes.
 """
 
 from __future__ import annotations
 
 import contextlib
+import sys
+import threading
+import time
 from typing import Generator
 
 from rich.console import Console
@@ -36,6 +42,85 @@ PHASE_VERBS: dict[str, str] = {
     "refine": "Refining plan",
     "thinking": "Thinking",
 }
+
+
+class LiveSpinner:
+    """ANSI-based spinner that coexists with TaskTree stdout output.
+
+    Unlike PhaseSpinner (Rich Status), this writes directly to stdout
+    using ANSI escapes and coordinates with the tree via
+    clear_for_output() / done_output() to avoid visual corruption.
+    """
+
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self) -> None:
+        self._phase = "Thinking"
+        self._idx = 0
+        self._active = False
+        self._paused = False
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> LiveSpinner:
+        self._active = True
+        # Only spin when stdout is a real terminal (skip in tests/pipes)
+        if sys.stdout.isatty():
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._active = False
+        if self._thread:
+            self._thread.join(timeout=1)
+            self._thread = None
+        self._clear()
+
+    def set_phase(self, phase: str) -> None:
+        """Update the displayed phase text."""
+        verb = PHASE_VERBS.get(phase, phase.replace("_", " ").title())
+        with self._lock:
+            self._phase = verb
+
+    def reset(self) -> None:
+        """Reset to default 'Thinking' phase."""
+        with self._lock:
+            self._phase = "Thinking"
+
+    def clear_for_output(self) -> None:
+        """Pause spinner and clear its line before external stdout writes."""
+        with self._lock:
+            self._paused = True
+            self._clear()
+
+    def done_output(self) -> None:
+        """Resume spinner after external stdout writes are finished."""
+        with self._lock:
+            self._paused = False
+
+    def _loop(self) -> None:
+        while self._active:
+            with self._lock:
+                if not self._paused and self._active:
+                    self._render()
+            time.sleep(0.08)
+
+    def _render(self) -> None:
+        if not sys.stdout.isatty():
+            return
+        frame = self.FRAMES[self._idx % len(self.FRAMES)]
+        self._idx += 1
+        sys.stdout.write(
+            f"\r\033[2K  \033[36m{frame}\033[0m \033[2m{self._phase}...\033[0m"
+        )
+        sys.stdout.flush()
+
+    def _clear(self) -> None:
+        if not sys.stdout.isatty():
+            return
+        sys.stdout.write("\r\033[2K")
+        sys.stdout.flush()
 
 
 class PhaseSpinner:

@@ -88,8 +88,13 @@ class TaskTree:
         self._root_title: str = ""
         self._stream = stream or sys.stdout
         self._use_color = use_color and hasattr(self._stream, "isatty") and self._stream.isatty()
+        self._spinner: object | None = None
 
     # -- public API ------------------------------------------------
+
+    def set_spinner(self, spinner: object | None) -> None:
+        """Attach a LiveSpinner for output coordination."""
+        self._spinner = spinner
 
     def set_root(self, title: str) -> None:
         """Set and print the root task title."""
@@ -194,9 +199,14 @@ class TaskTree:
             self._write(f"│     {self._c('dim', node.detail)}\n")
 
     def _write(self, text: str) -> None:
-        """Write text to the output stream."""
+        """Write text to the output stream, coordinating with any spinner."""
+        s = self._spinner
+        if s and hasattr(s, "clear_for_output"):
+            s.clear_for_output()
         self._stream.write(text)
         self._stream.flush()
+        if s and hasattr(s, "done_output"):
+            s.done_output()
 
 
 # ------------------------------------------------------------------
