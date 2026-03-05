@@ -470,6 +470,85 @@ def _run_plan_phase(
     return category.value, plan
 
 
+def _get_plan_input(display: Display) -> str | None:
+    """Prompt user for plan approval/feedback.
+
+    Returns:
+        User input string (empty = approve).
+        None on Ctrl+C / Ctrl+D (cancel).
+    """
+    try:
+        from prompt_toolkit import prompt as pt_prompt
+        from prompt_toolkit.styles import Style
+
+        style = Style.from_dict({"prompt": "#8bd5ca bold"})
+        result = pt_prompt("plan> ", style=style)
+        return result.strip()
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+
+def _plan_approval_loop(
+    description: str,
+    state: ChatState,
+    display: Display,
+    qi: "QInput | None" = None,
+) -> tuple[str, str] | None:
+    """Interactive plan approval loop.
+
+    Shows the plan, waits for user to approve, reject, or refine.
+    Returns (category_str, plan_text) or None if rejected/failed.
+    """
+    from agent.planner import refine_plan
+    from agent.providers import create_provider
+
+    cat_str, plan_text = _run_plan_phase(description, state, display)
+    if plan_text is None:
+        return None
+
+    # Non-interactive (benchmark, no qi): auto-proceed
+    if qi is None:
+        display.show_plan(plan_text, cat_str or "?", show_actions=False)
+        return cat_str, plan_text
+
+    provider = create_provider(state.config.model)
+
+    while True:
+        display.show_plan(plan_text, cat_str or "?")
+
+        response = _get_plan_input(display)
+
+        # Ctrl+C / Ctrl+D — cancel
+        if response is None:
+            display.show_info("Plan cancelled.")
+            return None
+
+        # Empty / yes — proceed
+        if response == "" or response.lower() in ("y", "yes", "go", "ok"):
+            return cat_str, plan_text
+
+        # Explicit reject
+        if response.lower() in ("n", "no", "cancel", "abort", "skip"):
+            display.show_info("Plan cancelled.")
+            return None
+
+        # Anything else — refine the plan with user feedback
+        spinner = PhaseSpinner(display.console)
+        try:
+            with spinner:
+                spinner.set_phase("refine")
+                plan_text = refine_plan(
+                    original_plan=plan_text,
+                    user_feedback=response,
+                    description=description,
+                    category_str=cat_str or "misc",
+                    client=provider,
+                    config=state.config,
+                )
+        except Exception as exc:
+            display.show_error(f"Refinement failed: {exc}")
+
+
 # ------------------------------------------------------------------
 # Solve logic
 # ------------------------------------------------------------------
@@ -687,15 +766,13 @@ def run_solve(
     if state.team_mode:
         return _run_team_solve(description, state, display, callbacks)
 
-    # --- Plan mode: classify + plan, show to user, get approval ---
+    # --- Plan mode: classify + plan, interactive approval ---
     forced_plan: str | None = None
     if state.plan_mode and not state.resume_session_id:
-        cat_str, plan_text = _run_plan_phase(description, state, display)
-        if plan_text is None:
-            return None  # planning failed, abort
-        display.show_plan(plan_text, cat_str or "?")
-        # Auto-proceed with the plan (no interactive approval needed)
-        forced_plan = plan_text
+        approved = _plan_approval_loop(description, state, display, qi)
+        if approved is None:
+            return None  # user rejected or planning failed
+        cat_str, forced_plan = approved
         if cat_str and not state.forced_category:
             state.forced_category = cat_str
 

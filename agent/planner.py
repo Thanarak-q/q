@@ -374,6 +374,65 @@ def select_model_for_classification(config: AppConfig) -> str:
     return config.model.fast_model
 
 
+REFINE_PROMPT = """\
+You are a CTF challenge planning assistant. You previously created an attack plan,
+and the user has provided feedback to improve it.
+
+Revise the plan based on the feedback. Keep the same format (3-5 numbered steps,
+specific tools and commands, fallback strategy). Stay under 300 words.
+Use only the tools listed in the original plan instructions.
+"""
+
+
+def refine_plan(
+    original_plan: str,
+    user_feedback: str,
+    description: str,
+    category_str: str,
+    client,
+    config: AppConfig,
+) -> str:
+    """Refine an existing plan based on user feedback.
+
+    Args:
+        original_plan: The current plan text.
+        user_feedback: User's feedback/instructions for refinement.
+        description: Original challenge description.
+        category_str: Category string (e.g. "crypto").
+        client: LLM provider.
+        config: Application configuration.
+
+    Returns:
+        Refined plan text string.
+    """
+    log = get_logger()
+
+    user_content = (
+        f"Category: {category_str}\n\n"
+        f"Challenge description:\n{description}\n\n"
+        f"Current plan:\n{original_plan}\n\n"
+        f"User feedback:\n{user_feedback}"
+    )
+
+    model = config.model.fast_model
+    try:
+        result = client.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": REFINE_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        plan = result["message"]["content"].strip()
+        log.info(f"Refined plan for {category_str} challenge (model={model})")
+        return plan
+    except Exception as exc:
+        log.error(f"Plan refinement failed: {exc}")
+        return original_plan
+
+
 def create_plan(
     description: str,
     category: Category,

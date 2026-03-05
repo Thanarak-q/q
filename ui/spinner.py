@@ -33,6 +33,7 @@ PHASE_VERBS: dict[str, str] = {
     "netcat_session": "Connecting to service",
     "answer_user": "Preparing answer",
     "evidence_tracker": "Verifying evidence",
+    "refine": "Refining plan",
     "thinking": "Thinking",
 }
 

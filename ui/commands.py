@@ -42,7 +42,7 @@ COMMAND_HELP: dict[str, str] = {
     "/team messages": "Show team message log",
     "/team agents": "Show active teammates with status",
     # Plan mode
-    "/plan [on|off]": "Toggle plan-before-solve mode (shows attack plan for approval)",
+    "/plan [on|off]": "Toggle plan mode (review, refine, and approve plan before solving)",
     # Settings
     "/settings": "Show all settings from ~/.q/settings.json",
     "/settings <key> <value>": "Update a setting (e.g. /settings openai_api_key sk-...)",
@@ -1089,11 +1089,11 @@ def _cmd_plan(arg: str, state: ChatState, display: Display) -> bool:
     if a == "on":
         state.plan_mode = True
         display.show_info(
-            "Plan mode ON — q will show attack plan for approval before solving."
+            "Plan mode ON — review, refine, and approve the attack plan before solving."
         )
     elif a == "off":
         state.plan_mode = False
-        display.show_info("Plan mode OFF — q will solve immediately without pausing.")
+        display.show_info("Plan mode OFF — solve immediately without planning.")
     else:
         status = "ON" if getattr(state, "plan_mode", True) else "OFF"
         display.console.print(
