@@ -59,6 +59,28 @@ COMMAND_HELP: dict[str, str] = {
 # Valid model prefixes (used by /model validation)
 _MODEL_EXAMPLES = "gpt-4o, o3, claude-sonnet-4-5, gemini-2.0-flash"
 
+# Curated model list for the interactive selector (ordered by provider)
+_SELECTOR_MODELS: list[str] = [
+    # OpenAI
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o3",
+    "o3-mini",
+    "o4-mini",
+    # Anthropic
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5",
+    "claude-opus-4-6",
+    "claude-haiku-4-5",
+    # Google
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+]
+
 # Valid categories
 VALID_CATEGORIES = {"web", "pwn", "crypto", "reverse", "forensics", "misc"}
 
@@ -188,15 +210,34 @@ def _cmd_repo(arg: str, state: ChatState, display: Display) -> bool:
     return False
 
 
+def _build_model_options(state: "ChatState") -> list[tuple[str, str]]:
+    """Build model list for the interactive selector."""
+    models: list[str] = list(_SELECTOR_MODELS)
+    # Include any configured models not already in the curated list
+    for m in (
+        state.current_model,
+        state.config.model.default_model,
+        state.config.model.fast_model,
+        state.config.model.reasoning_model,
+        state.config.model.fallback_model,
+    ):
+        if m and m not in models:
+            models.append(m)
+    return [(m, m) for m in models]
+
+
 def _cmd_model(arg: str, state: ChatState, display: Display) -> bool:
     if not arg:
-        display.console.print(
-            f"\n  Current model: [cyan]{state.current_model}[/cyan]\n"
-            f"  Fast model:    [dim]{state.config.model.fast_model}[/dim]\n"
-            f"  Reasoning:     [dim]{state.config.model.reasoning_model}[/dim]\n"
-            f"  [dim]Examples: {_MODEL_EXAMPLES}[/dim]\n"
+        from ui.selector import interactive_select
+
+        choice = interactive_select(
+            title="Select model:",
+            options=_build_model_options(state),
+            current=state.current_model,
         )
-        return False
+        if choice is None or choice == state.current_model:
+            return False
+        arg = choice
 
     model = arg.strip()
 
@@ -342,13 +383,23 @@ def _cmd_config(arg: str, state: ChatState, display: Display) -> bool:
 
 def _cmd_category(arg: str, state: ChatState, display: Display) -> bool:
     if not arg:
-        current = state.forced_category or "(auto-detect)"
-        display.console.print(
-            f"\n  Current category: [cyan]{current}[/cyan]\n"
-            f"  [dim]Use /category <name> to force, "
-            f"or /category auto to reset.[/dim]\n"
+        from ui.selector import interactive_select
+
+        options = [("auto", "auto-detect")] + [
+            (c, c) for c in sorted(VALID_CATEGORIES)
+        ]
+        choice = interactive_select(
+            title="Select category:",
+            options=options,
+            current=state.forced_category or "auto",
         )
-        return False
+        if choice is None:
+            return False
+        if choice == "auto":
+            state.forced_category = None
+            display.show_info("Category reset to auto-detect.")
+            return False
+        arg = choice
 
     cat = arg.strip().lower()
     if cat == "auto":
@@ -629,12 +680,24 @@ def _cmd_audit(arg: str, state: ChatState, display: Display) -> bool:
 def _cmd_verbose(arg: str, state: ChatState, display: Display) -> bool:
     from utils.logger import set_console_verbose
 
-    if arg.lower() in ("on", "true", "1"):
+    a = arg.strip().lower()
+    if not a:
+        from ui.selector import interactive_select
+
+        choice = interactive_select(
+            title="Verbose mode:",
+            options=[("on", "on — show full LLM output"), ("off", "off — compact view")],
+            current="on" if state.verbose else "off",
+        )
+        if choice is None:
+            return False
+        a = choice
+
+    if a in ("on", "true", "1"):
         state.verbose = True
-    elif arg.lower() in ("off", "false", "0"):
+    elif a in ("off", "false", "0"):
         state.verbose = False
     else:
-        # Toggle
         state.verbose = not state.verbose
 
     set_console_verbose(state.verbose)
@@ -971,16 +1034,29 @@ def _cmd_team(arg: str, state: ChatState, display: Display) -> bool:
             display.show_info("No active team.")
         return False
 
-    # /team (no args) — show status
-    status = "ON" if getattr(state, "team_mode", False) else "OFF"
-    display.console.print(
-        f"\n  [bold]Team mode:[/bold] {status}\n\n"
-        f"  [dim]/team on       Enable team solving[/dim]\n"
-        f"  [dim]/team off      Disable team solving[/dim]\n"
-        f"  [dim]/team tasks    Show task board[/dim]\n"
-        f"  [dim]/team messages Show message log[/dim]\n"
-        f"  [dim]/team agents   Show active teammates[/dim]\n"
-    )
+    # /team (no args) — interactive toggle
+    if not subcmd:
+        from ui.selector import interactive_select
+
+        choice = interactive_select(
+            title="Team mode:",
+            options=[
+                ("on", "on — coordinate multiple agents"),
+                ("off", "off — single agent"),
+            ],
+            current="on" if state.team_mode else "off",
+        )
+        if choice is None:
+            return False
+        if choice == "on":
+            state.team_mode = True
+            display.show_info("Team mode enabled. Next solve will use a coordinated team.")
+        else:
+            state.team_mode = False
+            display.show_info("Team mode disabled. Next solve will use single agent.")
+        return False
+
+    display.show_error(f"Unknown /team subcommand: {subcmd}")
     return False
 
 
@@ -1086,6 +1162,18 @@ def _cmd_settings(arg: str, state: ChatState, display: Display) -> bool:
 
 def _cmd_plan(arg: str, state: ChatState, display: Display) -> bool:
     a = arg.strip().lower()
+    if not a:
+        from ui.selector import interactive_select
+
+        choice = interactive_select(
+            title="Plan mode:",
+            options=[("on", "on — review plan before solving"), ("off", "off — solve immediately")],
+            current="on" if state.plan_mode else "off",
+        )
+        if choice is None:
+            return False
+        a = choice
+
     if a == "on":
         state.plan_mode = True
         display.show_info(
@@ -1094,13 +1182,6 @@ def _cmd_plan(arg: str, state: ChatState, display: Display) -> bool:
     elif a == "off":
         state.plan_mode = False
         display.show_info("Plan mode OFF — solve immediately without planning.")
-    else:
-        status = "ON" if getattr(state, "plan_mode", True) else "OFF"
-        display.console.print(
-            f"\n  [bold]Plan mode:[/bold] {status}\n\n"
-            f"  [dim]/plan on   Show attack plan before solving (default)[/dim]\n"
-            f"  [dim]/plan off  Skip plan, solve immediately[/dim]\n"
-        )
     return False
 
 
