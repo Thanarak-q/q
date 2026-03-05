@@ -59,6 +59,8 @@ class LLMInteractTool(BaseTool):
                 "analyze_response",
                 "reset_session",
                 "show_history",
+                "export_history",
+                "chat_web",
             ],
         ),
         ToolParameter(
@@ -149,6 +151,33 @@ class LLMInteractTool(BaseTool):
             description="Max number of payloads to try for spray/auto_attack. Default: 10.",
             required=False,
         ),
+        ToolParameter(
+            name="input_selector",
+            type="string",
+            description=(
+                "CSS selector for the chat input field (for chat_web action). "
+                "Default: auto-detect textarea/input."
+            ),
+            required=False,
+        ),
+        ToolParameter(
+            name="submit_selector",
+            type="string",
+            description=(
+                "CSS selector for the submit/send button (for chat_web action). "
+                "Default: auto-detect submit button."
+            ),
+            required=False,
+        ),
+        ToolParameter(
+            name="response_selector",
+            type="string",
+            description=(
+                "CSS selector for the AI response area (for chat_web action). "
+                "Default: auto-detect last message element."
+            ),
+            required=False,
+        ),
     ]
 
     def __init__(self) -> None:
@@ -182,6 +211,8 @@ class LLMInteractTool(BaseTool):
             "analyze_response": self._analyze_response,
             "reset_session": self._reset_session,
             "show_history": self._show_history,
+            "export_history": self._export_history,
+            "chat_web": self._chat_web,
         }
 
         handler = dispatch.get(action)
@@ -341,6 +372,144 @@ class LLMInteractTool(BaseTool):
             + "\n\nTry: encoding bypass, multi-turn, or side-channel extraction."
         )
 
+    def _chat_web(self, **kwargs: Any) -> str:
+        """Send a prompt via a web chat UI using the browser tool.
+
+        Automates: type into input → click send → wait → read response.
+        Uses auto-detection of common chat UI patterns if selectors aren't provided.
+        """
+        target_url = kwargs.get("target_url", "")
+        prompt = kwargs.get("prompt", "")
+        if not target_url:
+            return "[ERROR] 'target_url' is required."
+        if not prompt:
+            return "[ERROR] 'prompt' is required."
+
+        input_sel = kwargs.get("input_selector", "")
+        submit_sel = kwargs.get("submit_selector", "")
+        response_sel = kwargs.get("response_selector", "")
+
+        try:
+            from tools.browser import BrowserTool
+        except ImportError:
+            return "[ERROR] Browser tool not available. Use send_prompt for API targets."
+
+        # Get browser instance from the tool registry if possible,
+        # otherwise create a temporary one.
+        browser: BrowserTool | None = None
+        try:
+            from tools.registry import ToolRegistry
+            reg = ToolRegistry()
+            tool = reg.get("browser")
+            if isinstance(tool, BrowserTool):
+                browser = tool
+        except Exception:
+            pass
+
+        if browser is None:
+            browser = BrowserTool()
+
+        try:
+            # Navigate to the chat page
+            browser._ensure_browser()
+            page = browser._page
+
+            # Only navigate if we're not already on the target page
+            if not page.url.startswith(target_url.rstrip("/")):
+                page.goto(target_url, wait_until="domcontentloaded")
+                page.wait_for_timeout(1000)
+
+            # Auto-detect input field
+            if not input_sel:
+                for sel in [
+                    "textarea", "input[type='text']", "input[name='message']",
+                    "input[name='prompt']", "input[name='input']",
+                    "input[placeholder*='message' i]", "input[placeholder*='type' i]",
+                    "[contenteditable='true']",
+                ]:
+                    if page.query_selector(sel):
+                        input_sel = sel
+                        break
+                if not input_sel:
+                    return "[ERROR] Could not find chat input field. Provide input_selector."
+
+            # Auto-detect submit button
+            if not submit_sel:
+                for sel in [
+                    "button[type='submit']", "button:has-text('Send')",
+                    "button:has-text('send')", "button:has-text('Submit')",
+                    "input[type='submit']", "button[aria-label*='send' i]",
+                    "button svg", "form button:last-child",
+                ]:
+                    if page.query_selector(sel):
+                        submit_sel = sel
+                        break
+
+            # Count messages before sending to detect new response
+            pre_count = page.evaluate(
+                "() => document.querySelectorAll('[class*=\"message\"], [class*=\"chat\"] p, "
+                "[class*=\"response\"], [class*=\"reply\"], [class*=\"bot\"], "
+                "[class*=\"assistant\"]').length"
+            )
+
+            # Type the prompt
+            page.fill(input_sel, prompt)
+
+            # Submit — press Enter or click button
+            if submit_sel:
+                page.click(submit_sel)
+            else:
+                page.press(input_sel, "Enter")
+
+            # Wait for response (poll for new message element)
+            page.wait_for_timeout(2000)
+
+            # Try to read the response
+            response_text = ""
+            if response_sel:
+                elements = page.query_selector_all(response_sel)
+                if elements:
+                    response_text = elements[-1].inner_text()
+            else:
+                # Auto-detect: try common response container selectors
+                for sel in [
+                    "[class*='bot']:last-child", "[class*='assistant']:last-child",
+                    "[class*='response']:last-child", "[class*='reply']:last-child",
+                    "[class*='message']:last-child",
+                ]:
+                    elements = page.query_selector_all(sel)
+                    if elements:
+                        candidate = elements[-1].inner_text()
+                        if candidate and candidate != prompt:
+                            response_text = candidate
+                            break
+
+                # Fallback: get all text and take the part after our prompt
+                if not response_text:
+                    body_text = page.inner_text("body")
+                    if prompt in body_text:
+                        after = body_text.split(prompt)[-1].strip()
+                        response_text = after[:2000] if after else body_text[-1000:]
+                    else:
+                        response_text = body_text[-1000:]
+
+            # Track conversation
+            if target_url not in self._sessions:
+                self._sessions[target_url] = []
+            self._sessions[target_url].append({"role": "user", "content": prompt})
+            self._sessions[target_url].append({"role": "assistant", "content": response_text})
+
+            # Analyze for flags
+            flags = self._detect_flags(response_text)
+            turn_num = len(self._sessions[target_url]) // 2
+            result = f"[Turn {turn_num} — Web Chat] Response:\n{response_text}"
+            if flags:
+                result += f"\n\n[FLAG DETECTED] {', '.join(flags)}"
+            return result
+
+        except Exception as exc:
+            return f"[ERROR] Web chat interaction failed: {exc}"
+
     def _auto_attack(self, **kwargs: Any) -> str:
         """Run an escalating sequence of attacks against the target."""
         target_url = kwargs.get("target_url", "")
@@ -427,6 +596,42 @@ class LLMInteractTool(BaseTool):
                 reqs = self._request_counts.get(url, 0)
                 lines.append(f"  {url}: {msgs} messages, {reqs} total requests")
             return "Active sessions:\n" + "\n".join(lines)
+
+    def _export_history(self, **kwargs: Any) -> str:
+        """Export conversation history to a markdown file for writeups."""
+        from pathlib import Path
+        import time
+
+        target_url = kwargs.get("target_url", "")
+
+        if target_url and target_url in self._sessions:
+            sessions_to_export = {target_url: self._sessions[target_url]}
+        elif target_url:
+            return f"No session for {target_url}."
+        else:
+            sessions_to_export = dict(self._sessions)
+
+        if not sessions_to_export:
+            return "No sessions to export."
+
+        export_dir = Path.home() / ".q" / "reports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        path = export_dir / f"ai_attack_log_{timestamp}.md"
+
+        lines = ["# AI CTF Attack Log\n"]
+        for url, history in sessions_to_export.items():
+            reqs = self._request_counts.get(url, 0)
+            lines.append(f"## Target: {url}")
+            lines.append(f"Total requests: {reqs}\n")
+            for msg in history:
+                role = msg["role"].upper()
+                lines.append(f"### {role}")
+                lines.append(f"```\n{msg['content']}\n```\n")
+            lines.append("---\n")
+
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return f"History exported to {path}"
 
     def _do_request(
         self,
