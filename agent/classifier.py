@@ -25,6 +25,7 @@ class Category(str, Enum):
     REVERSE = "reverse"
     FORENSICS = "forensics"
     OSINT = "osint"
+    AI = "ai"
     MISC = "misc"
 
 
@@ -56,6 +57,7 @@ associated file information, classify it into exactly ONE of these categories:
 - reverse: Reverse engineering, disassembly, decompilation, keygen, crackme
 - forensics: Digital forensics, steganography, PCAP analysis, memory dumps
 - osint: Open source intelligence, geolocation, username search, domain investigation
+- ai: AI/LLM security, prompt injection, jailbreaking, prompt engineering, chatbot exploitation, secret extraction from AI, AI filter bypass
 - misc: Programming challenges, jail escapes, encoding puzzles
 
 Respond with ONLY the category name (lowercase, one word).

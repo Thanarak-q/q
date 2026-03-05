@@ -285,6 +285,12 @@ def summarize_tool_call(tool_name: str, args: dict, max_len: int = 60) -> str:
         url = args.get("url", "")
         return _truncate(f"network: {method} {url}", max_len)
 
+    if tool_name == "llm_interact":
+        action = args.get("action", "?")
+        prompt = args.get("prompt", "")
+        first_line = prompt.strip().splitlines()[0] if prompt.strip() else ""
+        return _truncate(f"llm: {action} — {first_line}", max_len)
+
     if tool_name == "answer_user":
         return "answer_user"
 

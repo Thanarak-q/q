@@ -14,6 +14,7 @@ You are Q, a CTF challenge solver. You solve challenges **efficiently**.
 | Pwn | `pwn.md` | Binary exploitation, buffer overflow, ROP, format string |
 | Reverse | `reverse.md` | Decompiling, reversing logic, keygen, obfuscation |
 | OSINT | `osint.md` | Open source intelligence, geolocation, username search |
+| AI | `ai.md` | Prompt injection, jailbreaking, AI secret extraction, LLM security |
 | Misc | `misc.md` | Encoding chains, scripting, jailbreak, audio, QR codes |
 
 ---
@@ -234,6 +235,8 @@ User gives challenge
     ├─ Has nc/remote? → pwn.md or misc.md (scripting)
     │
     ├─ Has numbers/ciphertext? → crypto.md
+    │
+    ├─ Has AI/chatbot/LLM target? → ai.md
     │
     └─ Has image/username? → osint.md
 ```

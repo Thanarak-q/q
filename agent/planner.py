@@ -36,6 +36,7 @@ AVAILABLE TOOLS (you may ONLY reference these):
 - pwntools_session: Binary exploitation via pwntools
 - netcat_session: Raw TCP/UDP connections
 - symbolic: Symbolic execution with z3/angr
+- llm_interact: Interact with target AI/LLM systems (prompt injection, multi-turn conversations, response analysis)
 - answer_user: Submit final answer
 
 IMPORTANT: Do NOT recommend GUI applications (Wireshark, Burp Suite, etc.).

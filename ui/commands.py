@@ -30,7 +30,7 @@ COMMAND_HELP: dict[str, str] = {
     # Session
     "/file <path>": "Load a file into the workspace",
     "/url <url>": "Set the target URL for the next challenge",
-    "/category [cat]": "Force category (web/pwn/crypto/reverse/forensics/misc)",
+    "/category [cat]": "Force category (web/pwn/crypto/reverse/forensics/ai/misc)",
     "/save": "Save current session",
     "/load <id>": "Load a saved session",
     "/sessions": "List all saved sessions",
@@ -82,7 +82,7 @@ _SELECTOR_MODELS: list[str] = [
 ]
 
 # Valid categories
-VALID_CATEGORIES = {"web", "pwn", "crypto", "reverse", "forensics", "misc"}
+VALID_CATEGORIES = {"web", "pwn", "crypto", "reverse", "forensics", "ai", "misc"}
 
 
 def _sync_chat_orchestrator_config(state: "ChatState") -> None:

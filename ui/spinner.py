@@ -37,6 +37,7 @@ PHASE_VERBS: dict[str, str] = {
     "debugger": "Debugging binary",
     "pwntools_session": "Exploiting target",
     "netcat_session": "Connecting to service",
+    "llm_interact": "Probing target AI",
     "answer_user": "Preparing answer",
     "evidence_tracker": "Verifying evidence",
     "refine": "Refining plan",

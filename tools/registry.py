@@ -12,6 +12,7 @@ from typing import Any, Optional
 from tools.answer_user import AnswerUserTool
 from tools.base import BaseTool, ToolResult
 from tools.file_manager import FileManagerTool
+from tools.llm_interact import LLMInteractTool
 from tools.network import NetworkTool
 from tools.python_exec import PythonExecTool
 from tools.recon import ReconTool
@@ -127,6 +128,7 @@ class ToolRegistry:
         self.register(NetworkTool())
         self.register(ReconTool())
         self.register(WebSearchTool(brave_api_key=brave_api_key))
+        self.register(LLMInteractTool())
         self.register(AnswerUserTool())
 
         from tools.browser import BrowserTool
