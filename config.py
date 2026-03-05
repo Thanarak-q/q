@@ -117,7 +117,7 @@ class AppConfig:
     browser_vision: BrowserVisionConfig = None
     ocr: OcrConfig = None
     team: TeamConfig = None
-    plan_mode: bool = False
+    plan_mode: bool = True
     sandbox_mode: str = "docker"
 
     def __post_init__(self):
@@ -229,7 +229,7 @@ def load_config() -> AppConfig:
         enabled=s.get("team_enabled", False),
         max_agents=s.get("team_max_agents", 2),
         budget_multiplier=s.get("team_budget_multiplier", 2.0),
-        task_timeout=s.get("team_task_timeout", 120),
+        task_timeout=s.get("team_task_timeout", 300),
     )
 
     return AppConfig(

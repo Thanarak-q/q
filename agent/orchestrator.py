@@ -708,6 +708,12 @@ class Orchestrator:
 
         # Conversational system prompt (no CTF skills/plans)
         self._context.set_system_prompt(build_chat_prompt())
+
+        # Trim context between turns to prevent unbounded growth
+        if self._context.needs_summarization():
+            self._context.summarize_history()
+            self._cb.on_context_summary()
+
         self._context.add_user_message(
             "Dynamic planning mode: start with a micro-plan (1-3 bullets) "
             "in <think>, then refresh it after each tool result."
