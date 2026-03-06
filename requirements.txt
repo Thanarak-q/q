@@ -14,7 +14,7 @@ prompt_toolkit>=3.0.0
 # sentence-transformers>=2.2.0
 # Multi-provider support
 anthropic>=0.39.0
-google-generativeai>=0.8.0
+google-genai>=1.0.0
 # Optional: Symbolic verification (angr is ~500MB)
 # angr>=9.2.0
 # z3-solver>=4.12.0

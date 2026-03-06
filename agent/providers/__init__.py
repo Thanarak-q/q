@@ -28,13 +28,13 @@ def create_provider(model_config) -> ProviderRouter:
     google_key = getattr(model_config, "google_api_key", "")
     if google_key:
         try:
-            import google.generativeai  # noqa: F401
+            from google import genai  # noqa: F401
             providers["google"] = GoogleProvider(api_key=google_key)
         except ImportError:
             import logging
             logging.getLogger(__name__).warning(
-                "Google API key set but google-generativeai not installed. "
-                "Run: pip install google-generativeai"
+                "Google API key set but google-genai not installed. "
+                "Run: pip install google-genai"
             )
 
     fallback = getattr(model_config, "fallback_model", "")

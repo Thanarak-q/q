@@ -1,4 +1,4 @@
-"""Google (Gemini) LLM provider with message format translation."""
+"""Google (Gemini) LLM provider using the google-genai SDK."""
 from __future__ import annotations
 
 import json
@@ -12,20 +12,19 @@ class GoogleProvider(LLMProvider):
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
-        self._genai: Any = None
+        self._client: Any = None
 
-    def _get_genai(self) -> Any:
-        if self._genai is None:
+    def _get_client(self) -> Any:
+        if self._client is None:
             try:
-                import google.generativeai as genai  # type: ignore
-                genai.configure(api_key=self._api_key)
-                self._genai = genai
+                from google import genai
+                self._client = genai.Client(api_key=self._api_key)
             except ImportError:
                 raise ImportError(
-                    "google-generativeai package required for Google provider. "
-                    "Install with: pip install google-generativeai"
+                    "google-genai package required for Google provider. "
+                    "Install with: pip install google-genai"
                 )
-        return self._genai
+        return self._client
 
     # ------------------------------------------------------------------
     # Format translation helpers
@@ -33,33 +32,34 @@ class GoogleProvider(LLMProvider):
 
     @staticmethod
     def _translate_tools(tools: list[dict[str, Any]] | None) -> list[Any] | None:
-        """OpenAI tool format → Google FunctionDeclaration list."""
+        """OpenAI tool format -> Google Tool list."""
         if not tools:
             return None
         try:
-            import google.generativeai.types as gtypes  # type: ignore
+            from google.genai import types
         except ImportError:
             return None
 
         declarations = []
         for tool in tools:
             func = tool.get("function", {})
+            params = func.get("parameters", {})
             declarations.append(
-                gtypes.FunctionDeclaration(
+                types.FunctionDeclaration(
                     name=func.get("name", ""),
                     description=func.get("description", ""),
-                    parameters=func.get("parameters", {}),
+                    parameters=params if params else None,
                 )
             )
-        return [gtypes.Tool(function_declarations=declarations)]
+        return [types.Tool(function_declarations=declarations)]
 
     @staticmethod
     def _translate_messages(
         messages: list[dict[str, Any]],
     ) -> tuple[str, list[dict[str, Any]]]:
-        """OpenAI-format messages → (system_instruction, google contents).
+        """OpenAI-format messages -> (system_instruction, google contents).
 
-        Builds a tool_id → name map from assistant messages so that
+        Builds a tool_id -> name map from assistant messages so that
         tool result messages can include the required function name.
         """
         system = ""
@@ -120,7 +120,7 @@ class GoogleProvider(LLMProvider):
 
     @staticmethod
     def _translate_response(candidate: Any) -> tuple[dict[str, Any], SimpleUsage]:
-        """Google candidate → internal (OpenAI-like) message dict."""
+        """Google candidate -> internal (OpenAI-like) message dict."""
         text_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
 
@@ -160,23 +160,24 @@ class GoogleProvider(LLMProvider):
         temperature: float = 0.2,
         max_tokens: int = 4096,
     ) -> dict[str, Any]:
-        genai = self._get_genai()
+        from google.genai import types
+
+        client = self._get_client()
         system, contents = self._translate_messages(messages)
         google_tools = self._translate_tools(tools)
 
-        kwargs: dict[str, Any] = {
-            "generation_config": {
-                "temperature": temperature,
-                "max_output_tokens": max_tokens,
-            },
-        }
-        if system:
-            kwargs["system_instruction"] = system
-        if google_tools:
-            kwargs["tools"] = google_tools
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+            system_instruction=system if system else None,
+            tools=google_tools,
+        )
 
-        m = genai.GenerativeModel(model, **kwargs)
-        response = m.generate_content(contents)
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=config,
+        )
 
         msg, usage = self._translate_response(response.candidates[0])
 
@@ -198,26 +199,25 @@ class GoogleProvider(LLMProvider):
         temperature: float = 0.2,
         max_tokens: int = 4096,
     ) -> Iterator[dict[str, Any]]:
-        genai = self._get_genai()
+        from google.genai import types
+
+        client = self._get_client()
         system, contents = self._translate_messages(messages)
         google_tools = self._translate_tools(tools)
 
-        kwargs: dict[str, Any] = {
-            "generation_config": {
-                "temperature": temperature,
-                "max_output_tokens": max_tokens,
-            },
-        }
-        if system:
-            kwargs["system_instruction"] = system
-        if google_tools:
-            kwargs["tools"] = google_tools
-
-        m = genai.GenerativeModel(model, **kwargs)
-        stream = m.generate_content(contents, stream=True)
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+            system_instruction=system if system else None,
+            tools=google_tools,
+        )
 
         tool_index = -1
-        for chunk in stream:
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=config,
+        ):
             if not chunk.candidates:
                 continue
             for part in chunk.candidates[0].content.parts:
