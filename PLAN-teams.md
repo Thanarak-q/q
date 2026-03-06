@@ -1,8 +1,10 @@
 # Q Team System — Implementation Plan
 
+> **Status: IMPLEMENTED** — All core components are built and working. See `agent/team/` for the implementation.
+
 ## Overview
 
-Add a team system to Q similar to Claude Code's agent teams. A **team lead** orchestrator breaks a CTF challenge into subtasks, spawns **teammate agents** (each running in its own thread with its own Orchestrator), coordinates via a **shared task list + message queue**, and synthesizes results.
+Multi-agent team system for Q. A **TeamLeader** orchestrator creates a task DAG, spawns **teammate agents** (each running in its own thread with its own Orchestrator), coordinates via a **shared TaskBoard + MessageBus**, and synthesizes results.
 
 Teams are **opt-in** — single-agent mode remains the default and is unaffected.
 
@@ -343,16 +345,24 @@ agent/team/
 
 ---
 
-## Implementation Order
+## Implementation Status
 
-1. **`taskboard.py`** — TaskBoard (standalone, thread-safe, testable)
-2. **`messages.py`** — MessageBus (standalone, thread-safe, testable)
-3. **`roles.py`** — Role presets (just data)
-4. **`callbacks.py`** — TeamCallbacks (wraps AgentCallbacks)
-5. **`leader.py`** — TeamLeader (core logic)
-6. **`manager.py`** — TeamManager (persistence)
-7. **`ui/commands.py`** — `/team` slash command
-8. **`ui/chat.py`** — Team mode integration in run_solve()
-9. **`config.py`** — Team settings
-10. **`main.py`** — `--team` flag
-11. **`README.md`** — Documentation
+All core components implemented:
+
+- [x] `taskboard.py` — TaskBoard (thread-safe, dependency DAG, assignee field)
+- [x] `messages.py` — MessageBus (per-agent queues, shutdown protocol)
+- [x] `roles.py` — TeammateConfig + TEAM_PRESETS for 7 categories (web, pwn, crypto, forensics, reverse, osint, misc)
+- [x] `callbacks.py` — TeamCallbacks (forwards flags/discoveries/errors to MessageBus)
+- [x] `leader.py` — TeamLeader (reactive coordinator, task DAG, graceful shutdown)
+- [x] `manager.py` — TeamManager (persistence to ~/.q/teams/)
+- [x] `ui/commands.py` — `/team` slash command (on/off/tasks/messages)
+- [x] `ui/chat.py` — Team mode integration
+- [x] `config.py` — Team settings (team_enabled, team_max_agents, team_task_timeout)
+- [x] `main.py` — `--team` flag
+- [x] `README.md` — Documentation
+
+### Known gaps
+
+- [ ] Missing `ai` category in TEAM_PRESETS
+- [ ] No dedicated team tests
+- [ ] TeamCallbacks.on_ask_user returns "" (teammates can't ask user)

@@ -1,6 +1,6 @@
 # Q Roadmap
 
-> Last updated: 2026-02-23
+> Last updated: 2026-03-06
 
 ## The Big Picture
 
@@ -384,7 +384,7 @@ Dependencies: angr, z3-solver, ropper
 
 ## v0.6.0 Release Scope
 
-Ship as **v0.6.0 — "The Intelligence Update"** (~2 weeks):
+Ship as **v0.6.0 — "The Intelligence Update"**:
 
 - [x] Checkpoint & Rewind (P0)
 - [x] Anti-Soliloquy Guard (P0)
@@ -394,29 +394,49 @@ Ship as **v0.6.0 — "The Intelligence Update"** (~2 weeks):
 - [x] Reflection Loop every 3 iterations (P1)
 - [x] Hypothesis-Driven Pivoting (P1)
 
-### v0.7.0 — "The Memory Update" (after v0.6.0):
+### v0.7.0 — "The Memory Update":
 
 - [x] RAG over CTF Writeups
 - [x] Procedural Memory
 - [x] Streaming Output
 - [x] Watch Mode
 
-### v0.8.0 — "The Platform Update" (after v0.7.0):
+### v0.8.0 — "The Platform Update":
 
 - [x] Multi-Provider Support
 - [x] Hooks System
 - [x] Symbolic Verification Layer
 
+### v0.9.0 — "The AI Security Update":
+
+- [x] AI category (`ai`) in classifier + skills
+- [x] `llm_interact` tool (9 actions: send_prompt, multi_turn, spray, auto_attack, chat_web, analyze_response, export_history, reset_session, show_history)
+- [x] Payload library (40+ prompt injection payloads across 8 categories)
+- [x] Deep-scan (auto-detect flags in base64, hex, ROT13, reversed text)
+- [x] `/flag` command (interactive flag format selector, custom regex)
+- [x] NCSA{} flag pattern support
+- [x] Team system — reactive leader, task DAG, MessageBus, presets for 7 categories
+- [x] E2E tests with live HTTP chatbot server
+
+### v1.0.0 — "Competition Ready" (planned):
+
+- [ ] AI team preset (missing from TEAM_PRESETS)
+- [ ] Streaming/SSE support for `llm_interact`
+- [ ] Rate-limit tracking per target
+- [ ] Team mode tests
+- [ ] Benchmark suite for AI challenges
+
 ---
 
 ## Performance Targets
 
-| Metric | v0.5.0 (current) | v0.6.0 (target) | v0.7.0 (target) |
-|--------|-------------------|------------------|------------------|
+| Metric | v0.5.0 | v0.8.0 | v0.9.0 (current) |
+|--------|--------|--------|-------------------|
 | Easy challenges | 3 steps, $0.04 | 3 steps, $0.04 | 2 steps, $0.02 |
 | Medium challenges | ~10 steps, ~$0.15 | 6 steps, $0.08 | 5 steps, $0.06 |
 | Hard pwn/reverse | Mostly fails | 50% solve rate | 65% solve rate |
 | Interactive exploits | Not supported | Supported (IATs) | + symbolic verify |
+| AI security | Not supported | Not supported | Supported (llm_interact + payloads) |
 
 ---
 

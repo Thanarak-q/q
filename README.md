@@ -3,7 +3,8 @@
 Q is a green capybara that solves CTF challenges using AI.
 
 Single-agent architecture with skill-based prompts, multi-provider LLM support,
-plan mode, browser automation, knowledge base learning, hooks system, and performance tracking.
+plan mode, browser automation, knowledge base learning, hooks system, team mode,
+AI security tools, and performance tracking.
 
 ## Setup Guide
 
@@ -150,15 +151,15 @@ Pulls latest code from GitHub and reinstalls dependencies automatically.
 agentq
 ```
 
-Q automatically routes your input through a 3-way classifier:
+Q automatically routes your input adaptively:
 
 | You type | Route | What happens |
 |----------|-------|-------------|
-| `"hi"`, `"thanks"`, `"how are you"` | **CHAT** | Quick LLM response, no tools (~$0.001) |
-| `"list files here"`, `"read scenario.txt"` | **TASK** | Lightweight tool loop, 5 steps max (~$0.01) |
-| CTF challenge description | **CHALLENGE** | Full pipeline: classify → plan → solve (~$0.12+) |
+| CTF challenge description | **SOLVE** | Full pipeline: classify → plan → solve (~$0.12+) |
+| `"list files here"`, `"read scenario.txt"` | **CHAT TURN** | Lightweight tool loop (~$0.01) |
+| `"hi"`, `"thanks"` | **CHAT TURN** | Quick LLM response, no tools (~$0.001) |
 
-Simple tasks skip the entire CTF pipeline — no classification, no attack plan, no scope lock. Just runs the tool and tells you what it found.
+Simple tasks skip the entire CTF pipeline — no classification, no attack plan. Just runs the tool and tells you what it found.
 
 | Input | Behaviour |
 |-------|-----------|
@@ -207,7 +208,8 @@ agentq update                       # Update to latest version
 | `/repo <path>` | Set source code for white-box analysis |
 | `/file <path>` | Load challenge file |
 | `/url <url>` | Set target URL |
-| `/category [cat]` | Force category |
+| `/category [cat]` | Force category (web/pwn/crypto/reverse/forensics/osint/ai/misc) |
+| `/flag [pattern]` | Set flag format (e.g. `NCSA{...}`) or show current pattern |
 | `/resume [id\|latest]` | Resume interrupted session |
 | `/rewind [n\|list]` | Rewind agent to checkpoint N |
 | `/stats` | Performance dashboard |
@@ -325,13 +327,13 @@ agentq --hooks configs/hooks.yaml
 Before solving, Q classifies the challenge category and generates a step-by-step attack plan. The plan is displayed in a Rich panel and Q pauses for your input:
 
 ```
-╭─ Attack Plan  web ───────────────────────────────────────────────╮
-│   1. Inspect login form — look for SQL injection entry points     │
-│   2. Test ' OR 1=1 -- in username field                          │
-│   3. If blocked, try time-based blind SQLi                        │
-│   4. Extract flag from database response                          │
-╰──────────────────────────────────────────────────────────────────╯
-  Enter to solve · type to add notes · 'skip' to skip plan
++-- Attack Plan  web ------------------------------------------------+
+|   1. Inspect login form — look for SQL injection entry points       |
+|   2. Test ' OR 1=1 -- in username field                             |
+|   3. If blocked, try time-based blind SQLi                          |
+|   4. Extract flag from database response                            |
++---------------------------------------------------------------------+
+  Enter to solve . type to add notes . 'skip' to skip plan
   plan>
 ```
 
@@ -360,30 +362,63 @@ agentq --team
 
 Each category gets a preset team:
 
-| Category | Phase 1 Agent | Phase 2 Agent |
-|----------|--------------|---------------|
-| Web | Recon (enumerate) | Exploit (attack) |
-| Pwn | Analyst (disassemble) | Exploit (rop/shellcode) |
-| Crypto | Analyst (identify) | Solver (implement) |
-| Reverse | Static analyst | Dynamic analyst |
+| Category | Agent 1 | Agent 2 |
+|----------|---------|---------|
+| Web | Recon (enumerate endpoints) | Exploit (SQLi, XSS, SSTI) |
+| Pwn | Analyst (checksec, disassemble) | Exploit (pwntools, ROP) |
+| Crypto | Analyst (identify cipher) | Solver (implement attack) |
+| Reverse | Static analyst (decompile) | Solver (keygen, z3) |
+| Forensics | Analyst (tshark, binwalk) | Extractor (decode, reconstruct) |
+| OSINT | Researcher (search, recon) | Analyst (connect dots) |
+| Misc | Primary solver | Alternative solver |
 
-Phase 1 starts immediately. Phase 2 starts as soon as Phase 1 makes a discovery — not after Phase 1 finishes. Agents communicate via a shared TaskBoard and MessageBus.
+Architecture:
+- **TeamLeader** creates a task DAG with dependency edges
+- Teammates are autonomous — claim tasks, solve, report results
+- Communication via shared **TaskBoard** + **MessageBus**
+- Reactive monitor loop — leader reacts to flags, discoveries, idle agents
+- Graceful shutdown protocol when flag found or all tasks complete
 
 ```bash
 /team tasks      # view task board
 /team messages   # view inter-agent messages
 ```
 
-> **Note**: Team mode uses 2× more tokens. Best for genuinely hard challenges where parallel exploration helps. Single-agent mode is faster and cheaper for most challenges.
+> **Note**: Team mode uses 2x more tokens. Best for genuinely hard challenges where parallel exploration helps. Single-agent mode is faster and cheaper for most challenges.
+
+## AI Security / Prompt Injection
+
+Q has built-in support for AI security CTF challenges (prompt injection, jailbreaking, secret extraction):
+
+| Feature | Description |
+|---------|-------------|
+| `llm_interact` tool | 9 actions: send_prompt, multi_turn, spray, auto_attack, chat_web, analyze_response, export_history, reset_session, show_history |
+| Payload library | 40+ categorized prompt injection payloads (direct, override, roleplay, encoding, indirect, sidechannel, context, multiturn) |
+| Auto-attack | Escalating payload sequence — stops on first flag |
+| Deep-scan | Auto-detects flags hidden in base64, hex, ROT13, reversed text |
+| `/flag` command | Set flag format for competition (e.g. `NCSA{...}`, custom regex) |
+| `ai.md` skill | Comprehensive reference for AI security techniques |
+
+```bash
+# Auto-attack a target chatbot
+llm_interact(action="auto_attack", target_url="http://target/api/chat")
+
+# Spray specific payload category
+llm_interact(action="spray", target_url="...", payload_category="encoding")
+
+# Set flag format for NCSA AI CTF
+/flag NCSA{...}
+```
 
 ## Features
 
-- **Conversational mode** — CHAT/TASK/CHALLENGE 3-way router; simple tasks use lightweight tool loop, only CTF challenges trigger full pipeline
+- **Adaptive routing** — challenge-like input triggers full solve pipeline; normal tasks use lightweight tool loop
 - **Plan mode** — classify challenge, generate attack plan, pause for user approval before solving
 - **Multi-provider LLM** — OpenAI, Anthropic, Google with prefix-based routing (all fully implemented)
-- **Team mode** — parallel specialized agents (recon + exploit) with event-based phase sync
+- **Team mode** — reactive leader + autonomous teammates with task DAG, MessageBus, and graceful shutdown
+- **AI security tools** — `llm_interact` with 40+ payloads, auto-attack, deep-scan for encoded flags
 - **Web search** — DuckDuckGo (no key) + Brave Search API (optional) for live intelligence
-- **Skill-based solving** — category cheat sheets guide the agent (web, crypto, pwn, rev, forensics, osint, misc)
+- **Skill-based solving** — category cheat sheets guide the agent (web, crypto, pwn, rev, forensics, osint, ai, misc)
 - **Checkpoint & rewind** — `/rewind` to any previous agent state (up to 20 checkpoints)
 - **Reflection loop** — agent self-critiques every 3 iterations, auto-pivots on low confidence
 - **Hypothesis-driven pivoting** — 5 failure types with targeted recovery strategies
@@ -415,6 +450,7 @@ Phase 1 starts immediately. Phase 2 starts as soon as Phase 1 makes a discovery 
 | Reverse | Binary analysis, decompilation, keygen, anti-debug bypass |
 | Forensics | PCAP analysis, memory dumps, disk images, steganography |
 | OSINT | Username lookup, geolocation, domain recon |
+| AI | Prompt injection, jailbreaking, secret extraction, AI filter bypass, LLM security |
 | Misc | Encoding, scripting, jail escape, esoteric languages |
 
 ## Tools
@@ -432,6 +468,7 @@ Phase 1 starts immediately. Phase 2 starts as soon as Phase 1 makes a discovery 
 | `symbolic` | Formal analysis: checksec, ropper, angr, z3 |
 | `recon` | Web recon, directory brute-force, header analysis |
 | `web_search` | DuckDuckGo (no key) + Brave Search API (optional) |
+| `llm_interact` | AI target interaction: send_prompt, spray, auto_attack, multi_turn, chat_web |
 | `code_analyzer` | Static code analysis for vulnerabilities |
 | `answer_user` | Provide answers with confidence scores and flags |
 
@@ -458,11 +495,18 @@ Add challenges to `benchmark/challenges.json`:
 
 ## Testing
 
-Run regression + guardrail tests:
+Run regression + guardrail + AI CTF tests:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+Test files:
+- `tests/test_phase3_regressions.py` — core pipeline regression tests
+- `tests/test_guardrails.py` — cost/token guardrail tests
+- `tests/test_input_handler.py` — input handling tests
+- `tests/test_ai_ctf.py` — AI payload, category, flag extractor tests
+- `tests/test_ai_e2e.py` — E2E tests with live HTTP chatbot server
 
 ## E2E Transcripts
 
@@ -480,8 +524,10 @@ All user data is stored in `~/.q/` — never in the install directory:
 ├── settings.json       # Your config and API keys
 ├── sessions/           # Saved solve sessions
 │   └── screenshots/    # Browser screenshots
+├── teams/              # Team solve metadata
 ├── logs/               # Application logs
-└── reports/            # Markdown solve reports
+├── reports/            # Markdown solve reports
+└── history             # Input history (prompt_toolkit)
 ```
 
 ## Project Structure
@@ -506,16 +552,16 @@ ctf-agent/
 │   │   ├── google_provider.py  # Google Gemini provider
 │   │   └── router.py           # ProviderRouter (prefix-based routing)
 │   └── team/
-│       ├── leader.py           # TeamLeader — coordinates agents
-│       ├── manager.py          # TeamManager
-│       ├── taskboard.py        # Thread-safe TaskBoard (assignee field)
-│       ├── messages.py         # MessageBus (per-agent queues)
-│       ├── roles.py            # TEAM_PRESETS per category
-│       └── callbacks.py        # TeamCallbacks
+│       ├── leader.py           # TeamLeader — reactive coordinator with task DAG
+│       ├── manager.py          # TeamManager — persistence to ~/.q/teams/
+│       ├── taskboard.py        # Thread-safe TaskBoard with dependency edges
+│       ├── messages.py         # MessageBus — per-agent queues + shutdown protocol
+│       ├── roles.py            # TeammateConfig + TEAM_PRESETS per category
+│       └── callbacks.py        # TeamCallbacks — forwards events to MessageBus
 ├── tools/
-│   ├── shell.py                # Shell execution
+│   ├── shell.py                # Shell execution (non-interactive policy)
 │   ├── python_exec.py          # Python execution
-│   ├── file_manager.py         # File operations
+│   ├── file_manager.py         # File operations (workspace-bounded)
 │   ├── network.py              # HTTP + TCP
 │   ├── browser.py              # Playwright browser
 │   ├── debugger.py             # GDB via pexpect
@@ -524,36 +570,40 @@ ctf-agent/
 │   ├── symbolic.py             # checksec / ropper / angr / z3
 │   ├── recon.py                # Web recon
 │   ├── web_search.py           # DuckDuckGo + Brave Search
+│   ├── llm_interact.py         # AI target interaction (9 actions + deep-scan)
+│   ├── ai_payloads.py          # 40+ prompt injection payloads
 │   ├── code_analyzer.py        # Static analysis
 │   ├── answer_user.py          # Answer + flag submission
-│   └── registry.py             # Tool registry + dispatch
+│   └── registry.py             # Tool registry + dispatch + smart truncation
 ├── skills/                     # Category cheat sheets
-│   ├── SKILL.md                # Core agent rules
+│   ├── SKILL.md                # Core agent rules + decision tree
 │   ├── web.md / crypto.md / pwn.md / reverse.md
 │   ├── forensics.md / osint.md / misc.md
+│   └── ai.md                   # AI security skill (prompt injection, jailbreak)
 ├── knowledge/
 │   ├── base.py                 # KnowledgeBase (JSON + keyword matching)
 │   ├── embeddings.py           # RAG via ChromaDB + sentence-transformers
 │   ├── procedural.py           # Procedural memory (success chains + anti-patterns)
 │   └── extractor.py            # Auto-extract techniques from solves
 ├── ui/
-│   ├── chat.py                 # Chat loop + 3-way router + plan approval
+│   ├── chat.py                 # Adaptive turn router + run_solve/run_chat_turn + guardrails
 │   ├── display.py              # Rich display + plan panel
-│   ├── commands.py             # Slash command handlers (/plan, /team, /rewind, ...)
+│   ├── commands.py             # Slash commands (/plan, /team, /flag, /model, ...)
 │   ├── watch.py                # Live 2x2 Rich dashboard
 │   ├── spinner.py              # PhaseSpinner (context-aware verbs)
-│   ├── input_handler.py        # prompt_toolkit input
-│   ├── input_filter.py         # Pre-filter (greetings, exit, clarify)
 │   ├── tree.py                 # Task tree renderer
+│   ├── selector.py             # Interactive arrow-key selectors
+│   ├── input_handler.py        # prompt_toolkit input (QInput)
+│   ├── input_filter.py         # Pre-filter (greetings, exit, clarify)
 │   └── mascot.py               # Capybara mascot
 ├── prompts/
-│   ├── system.py               # System prompt builder (CTF + conversational)
+│   ├── system.py               # System prompt builder (CTF + conversational + AI)
 │   └── strategies.py           # Pivot prompts
 ├── utils/
 │   ├── session_manager.py      # Session persistence
 │   ├── cost_tracker.py         # Token/cost tracking
 │   ├── audit_log.py            # Audit logging
-│   ├── flag_extractor.py       # Flag pattern matching
+│   ├── flag_extractor.py       # Flag pattern matching (incl. NCSA{})
 │   ├── ocr.py                  # Auto-OCR via GPT vision
 │   └── logger.py               # Structured logging
 ├── benchmark/
@@ -564,6 +614,12 @@ ctf-agent/
 ├── configs/
 │   ├── example.yaml            # Example YAML config
 │   └── hooks.yaml              # Example hooks config
+├── tests/
+│   ├── test_phase3_regressions.py
+│   ├── test_guardrails.py
+│   ├── test_input_handler.py
+│   ├── test_ai_ctf.py          # AI payload, category, flag tests
+│   └── test_ai_e2e.py          # E2E with live chatbot server
 └── sandbox/
     ├── docker_manager.py       # Docker sandbox manager
     └── Dockerfile              # Sandbox image
