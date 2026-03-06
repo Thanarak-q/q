@@ -24,10 +24,18 @@ def create_provider(model_config) -> ProviderRouter:
     if anthropic_key:
         providers["anthropic"] = AnthropicProvider(api_key=anthropic_key)
 
-    # Google (optional)
+    # Google (optional — requires google-generativeai package)
     google_key = getattr(model_config, "google_api_key", "")
     if google_key:
-        providers["google"] = GoogleProvider(api_key=google_key)
+        try:
+            import google.generativeai  # noqa: F401
+            providers["google"] = GoogleProvider(api_key=google_key)
+        except ImportError:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Google API key set but google-generativeai not installed. "
+                "Run: pip install google-generativeai"
+            )
 
     fallback = getattr(model_config, "fallback_model", "")
     return ProviderRouter(providers=providers, fallback_model=fallback)
