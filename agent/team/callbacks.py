@@ -56,7 +56,7 @@ class TeamCallbacks(AgentCallbacks):
         if not success:
             return
         # Forward significant findings to lead
-        if tool_name in ("recon", "shell", "network", "browser", "code_analyzer"):
+        if tool_name in ("recon", "shell", "network", "browser", "code_analyzer", "llm_interact", "python_exec"):
             if len(output) > 50:
                 self._msgbus.send(
                     self._name, "lead",
