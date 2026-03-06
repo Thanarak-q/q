@@ -213,9 +213,24 @@ class TeamLeader:
             _log.debug(f"[lead] Teammate {mate.name} already running")
             return
 
+        # Per-teammate workspace isolation
+        mate_workspace = self._workspace / f"team_{mate.name}"
+        mate_workspace.mkdir(parents=True, exist_ok=True)
+
+        # Symlink challenge files into teammate workspace
+        if files:
+            for f in files:
+                dest = mate_workspace / f.name
+                if not dest.exists():
+                    try:
+                        dest.symlink_to(f.resolve())
+                    except OSError:
+                        import shutil
+                        shutil.copy2(f, dest)
+
         t = threading.Thread(
             target=self._teammate_loop,
-            args=(mate, description, files, target_url, flag_pattern),
+            args=(mate, description, files, target_url, flag_pattern, mate_workspace),
             name=f"team-{mate.name}",
             daemon=True,
         )
@@ -231,6 +246,7 @@ class TeamLeader:
         files: list[Path] | None,
         target_url: str | None,
         flag_pattern: str | None,
+        workspace: Path | None = None,
     ) -> None:
         """Autonomous teammate loop — claim tasks, solve, repeat."""
         tb = self._taskboard
@@ -274,10 +290,11 @@ class TeamLeader:
 
                 # Create orchestrator and solve
                 callbacks = TeamCallbacks(mate.name, mb, tb)
+                mate_ws = workspace or self._workspace
                 orch = Orchestrator(
                     config=self._config,
                     docker_manager=self._docker,
-                    workspace=self._workspace,
+                    workspace=mate_ws,
                     callbacks=callbacks,
                     hooks_path=self._hooks_path,
                 )

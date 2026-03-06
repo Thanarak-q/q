@@ -1,10 +1,14 @@
 """Tests for the team system: TaskBoard, MessageBus, roles, callbacks."""
 
+import shutil
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
 from agent.team.callbacks import TeamCallbacks
+from agent.team.leader import TeamLeader
 from agent.team.messages import Message, MessageBus
 from agent.team.roles import TEAM_PRESETS, TeammateConfig
 from agent.team.taskboard import Task, TaskBoard
@@ -251,6 +255,56 @@ class TestTeamCallbacks(unittest.TestCase):
     def test_on_ask_user_returns_empty(self):
         result = self.cb.on_ask_user("Need password")
         self.assertEqual(result, "")
+
+
+class TestWorkspaceIsolation(unittest.TestCase):
+    """Verify per-teammate workspace directories."""
+
+    def setUp(self):
+        self.tmpdir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_spawn_creates_per_teammate_dirs(self):
+        leader = TeamLeader(workspace=self.tmpdir)
+        mate_a = TeammateConfig(name="recon", role="Recon", prompt="Do recon")
+        mate_b = TeammateConfig(name="exploit", role="Exploit", prompt="Exploit")
+
+        # Call _spawn_teammate (doesn't start the thread, just creates it)
+        leader._spawn_teammate(mate_a, "test challenge")
+        leader._spawn_teammate(mate_b, "test challenge")
+
+        self.assertTrue((self.tmpdir / "team_recon").is_dir())
+        self.assertTrue((self.tmpdir / "team_exploit").is_dir())
+
+    def test_spawn_symlinks_challenge_files(self):
+        # Create a challenge file
+        challenge_file = self.tmpdir / "challenge.py"
+        challenge_file.write_text("print('hello')")
+
+        leader = TeamLeader(workspace=self.tmpdir)
+        mate = TeammateConfig(name="solver", role="Solver", prompt="Solve")
+        leader._spawn_teammate(mate, "test", files=[challenge_file])
+
+        linked = self.tmpdir / "team_solver" / "challenge.py"
+        self.assertTrue(linked.exists())
+        self.assertEqual(linked.read_text(), "print('hello')")
+
+    def test_teammates_get_separate_workspaces(self):
+        """Files written in one teammate dir don't appear in another."""
+        leader = TeamLeader(workspace=self.tmpdir)
+        mate_a = TeammateConfig(name="a", role="A", prompt="A")
+        mate_b = TeammateConfig(name="b", role="B", prompt="B")
+
+        leader._spawn_teammate(mate_a, "test")
+        leader._spawn_teammate(mate_b, "test")
+
+        # Write a file in a's workspace
+        (self.tmpdir / "team_a" / "exploit.py").write_text("pwn")
+
+        # b's workspace should not have it
+        self.assertFalse((self.tmpdir / "team_b" / "exploit.py").exists())
 
 
 if __name__ == "__main__":
