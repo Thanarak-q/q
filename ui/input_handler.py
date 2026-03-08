@@ -43,7 +43,7 @@ class SlashCommandCompleter(Completer):
                     if part.startswith("/") and part not in result:
                         result[part] = desc
             return result
-        except Exception:
+        except (ImportError, AttributeError, TypeError):
             return {}
 
     def get_completions(self, document, complete_event):

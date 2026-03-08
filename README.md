@@ -294,13 +294,13 @@ Q routes to different LLM providers based on model name prefix:
 
 | Prefix | Provider | Example models |
 |--------|----------|----------------|
-| `gpt-`, `o3`, `o4` | OpenAI | `gpt-4o`, `gpt-4o-mini`, `o3` |
-| `claude-` | Anthropic | `claude-sonnet-4-5`, `claude-opus-4` |
-| `gemini-` | Google | `gemini-2.0-flash`, `gemini-2.5-pro` |
+| `gpt-`, `o3`, `o4` | OpenAI | `gpt-4o`, `gpt-4o-mini`, `o3`, `o4-mini` |
+| `claude-` | Anthropic | `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5` |
+| `gemini-` | Google | `gemini-2.0-flash`, `gemini-2.5-pro`, `gemini-2.5-flash` |
 
-Switch model mid-solve: `/model claude-sonnet-4-5`
+Switch model mid-solve: `/model claude-sonnet-4-6`
 
-All three providers are fully implemented with OpenAI-compatible tool calling.
+All three providers are fully implemented with OpenAI-compatible tool calling. If a provider fails and `fallback_model` is set, Q automatically retries with the fallback.
 
 ## Hooks
 
@@ -370,6 +370,7 @@ Each category gets a preset team:
 | Reverse | Static analyst (decompile) | Solver (keygen, z3) |
 | Forensics | Analyst (tshark, binwalk) | Extractor (decode, reconstruct) |
 | OSINT | Researcher (search, recon) | Analyst (connect dots) |
+| AI | Prompt crafter (injection, jailbreak) | Analyst (side-channel, encoding) |
 | Misc | Primary solver | Alternative solver |
 
 Architecture:

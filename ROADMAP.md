@@ -420,10 +420,15 @@ Ship as **v0.6.0 — "The Intelligence Update"**:
 
 ### v1.0.0 — "Competition Ready" (planned):
 
-- [ ] AI team preset (missing from TEAM_PRESETS)
+- [x] AI team preset in TEAM_PRESETS
+- [x] Team mode tests (30 tests in test_team.py)
+- [x] Config validation (settings key whitelist, typo warnings)
+- [x] Lazy tool loading (from_subset uses factories, not full instantiation)
+- [x] Provider fallback recursion guard
+- [x] Summarization cost optimization (uses fast_model)
+- [x] Exception handling audit (narrowed ~20 broad catches, eliminated silent passes)
 - [ ] Streaming/SSE support for `llm_interact`
 - [ ] Rate-limit tracking per target
-- [ ] Team mode tests
 - [ ] Benchmark suite for AI challenges
 
 ---

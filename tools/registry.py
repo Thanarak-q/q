@@ -110,6 +110,7 @@ class ToolRegistry:
         workspace: Optional[Any] = None,
         vision_config: Optional[Any] = None,
         brave_api_key: str = "",
+        max_output_chars: int = 4000,
     ) -> None:
         """Initialise the registry and register default tools.
 
@@ -117,9 +118,11 @@ class ToolRegistry:
             docker_manager: Optional DockerSandbox instance shared by tools.
             workspace: Optional workspace Path for file operations.
             vision_config: Optional BrowserVisionConfig for the browser tool.
+            max_output_chars: Max chars for tool output truncation.
         """
         self._tools: dict[str, BaseTool] = {}
         self._log = get_logger()
+        self._max_output_chars = max_output_chars
 
         # Register built-in tools
         self.register(ShellTool(docker_manager=docker_manager))
@@ -151,33 +154,75 @@ class ToolRegistry:
         tool_names: list[str],
         docker_manager: Optional[Any] = None,
         workspace: Optional[Any] = None,
+        max_output_chars: int = 4000,
     ) -> "ToolRegistry":
         """Create a registry with only the specified tools.
 
-        Useful for pipeline agents that need a restricted tool set.
+        Only instantiates the requested tools instead of all tools.
 
         Args:
             tool_names: List of tool names to include.
             docker_manager: Docker sandbox manager.
             workspace: Workspace path.
+            max_output_chars: Max chars for tool output truncation.
 
         Returns:
             A ToolRegistry with only the requested tools registered.
         """
-        full = cls(docker_manager=docker_manager, workspace=workspace)
+        # Map tool names to lazy constructors to avoid instantiating everything
+        _TOOL_FACTORIES: dict[str, Any] = {
+            "shell": lambda: ShellTool(docker_manager=docker_manager),
+            "python_exec": lambda: PythonExecTool(docker_manager=docker_manager),
+            "file_manager": lambda: FileManagerTool(workspace=workspace, docker_manager=docker_manager),
+            "network": lambda: NetworkTool(),
+            "recon": lambda: ReconTool(),
+            "web_search": lambda: WebSearchTool(),
+            "llm_interact": lambda: LLMInteractTool(),
+            "answer_user": lambda: AnswerUserTool(),
+        }
+
+        def _lazy_browser():
+            from tools.browser import BrowserTool
+            return BrowserTool()
+
+        def _lazy_debugger():
+            from tools.debugger import DebuggerTool
+            return DebuggerTool()
+
+        def _lazy_pwntools():
+            from tools.pwntools_session import PwntoolsSessionTool
+            return PwntoolsSessionTool()
+
+        def _lazy_netcat():
+            from tools.netcat_session import NetcatSessionTool
+            return NetcatSessionTool()
+
+        def _lazy_symbolic():
+            from tools.symbolic import SymbolicTool
+            return SymbolicTool()
+
+        def _lazy_submit():
+            from tools.submit_deliverable import SubmitDeliverableTool
+            return SubmitDeliverableTool()
+
+        _TOOL_FACTORIES.update({
+            "browser": _lazy_browser,
+            "debugger": _lazy_debugger,
+            "pwntools_session": _lazy_pwntools,
+            "netcat_session": _lazy_netcat,
+            "symbolic": _lazy_symbolic,
+            "submit_deliverable": _lazy_submit,
+        })
+
         filtered = cls.__new__(cls)
         filtered._tools = {}
         filtered._log = get_logger()
+        filtered._max_output_chars = max_output_chars
 
         for name in tool_names:
-            tool = full.get(name)
-            if tool:
-                filtered._tools[name] = tool
-
-        # Register submit_deliverable if requested but not in the full set
-        if "submit_deliverable" in tool_names and "submit_deliverable" not in filtered._tools:
-            from tools.submit_deliverable import SubmitDeliverableTool
-            filtered._tools["submit_deliverable"] = SubmitDeliverableTool()
+            factory = _TOOL_FACTORIES.get(name)
+            if factory:
+                filtered._tools[name] = factory()
 
         return filtered
 
@@ -240,9 +285,7 @@ class ToolRegistry:
         result = tool.run(**arguments)
 
         # Smart truncation for oversized output
-        from config import load_config
-        max_chars = load_config().agent.tool_output_max_chars
-        if len(result.output) > max_chars:
-            result.output = _smart_truncate(result.output, max_chars)
+        if len(result.output) > self._max_output_chars:
+            result.output = _smart_truncate(result.output, self._max_output_chars)
 
         return result

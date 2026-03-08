@@ -92,7 +92,7 @@ class SymbolicTool(BaseTool):
                 return result.stdout.strip()[:MAX_OUTPUT]
         except FileNotFoundError:
             pass
-        except Exception:
+        except (subprocess.SubprocessError, OSError):
             pass
 
         # Fallback to pwntools ELF
@@ -232,20 +232,19 @@ class SymbolicTool(BaseTool):
                     stdin_data = found_state.posix.dumps(0)
                     if stdin_data:
                         lines.append(f"  Input (bytes): {stdin_data!r}")
-                        # Try to show as string if printable
                         try:
                             decoded = stdin_data.decode("ascii", errors="replace")
                             lines.append(f"  Input (ascii): {decoded}")
-                        except Exception:
+                        except (UnicodeDecodeError, AttributeError):
                             pass
-                except Exception:
+                except (AttributeError, TypeError):
                     pass
 
                 # Constraint count
                 try:
                     n_constraints = len(found_state.solver.constraints)
                     lines.append(f"  Constraints: {n_constraints}")
-                except Exception:
+                except (AttributeError, TypeError):
                     pass
 
                 lines.append(f"  States explored: {simgr.completion}")

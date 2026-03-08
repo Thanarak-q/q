@@ -177,10 +177,11 @@ class ReconTool(BaseTool):
                         if resp.status_code == 200 and len(resp.content) < 500:
                             entry["body"] = resp.text[:500]
                         results["interesting_paths"].append(entry)
-                except Exception:
+                except (httpx.HTTPError, OSError):
                     continue
-        except Exception:
-            pass
+        except (httpx.HTTPError, OSError) as exc:
+            from utils.logger import get_logger
+            get_logger().debug(f"Path scan failed: {exc}")
 
         # 3. WhatWeb (if installed)
         whatweb_result = self._whatweb(url)

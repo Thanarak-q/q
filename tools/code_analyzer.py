@@ -209,7 +209,7 @@ class CodeAnalyzer:
             try:
                 content = filepath.read_text(errors="ignore")
                 lines = content.split("\n")
-            except Exception:
+            except OSError:
                 continue
 
             rel_path = os.path.relpath(filepath, repo_path)

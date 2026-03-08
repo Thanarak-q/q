@@ -264,6 +264,7 @@ class Orchestrator:
             workspace=self._workspace,
             vision_config=self._config.browser_vision,
             brave_api_key=self._config.model.brave_api_key,
+            max_output_chars=self._config.agent.tool_output_max_chars,
         )
         self._context = ContextManager(self._provider, self._config)
         self._log = get_logger()
@@ -315,8 +316,8 @@ class Orchestrator:
                 from config_yaml.loader import load_yaml_config
 
                 self._yaml_config = load_yaml_config(yaml_config_path)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log.debug(f"Failed to load YAML config: {exc}")
 
         # Hooks system
         from agent.hooks import HookEngine
@@ -330,8 +331,8 @@ class Orchestrator:
                     if self._yaml_config and hasattr(self._yaml_config, "hooks_path")
                     else None
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log.debug(f"Failed to read hooks_path from YAML config: {exc}")
         if not _hooks_path:
             default_hooks = (
                 Path(__file__).resolve().parent.parent / "configs" / "hooks.yaml"
@@ -704,6 +705,7 @@ class Orchestrator:
             ],
             docker_manager=self._docker,
             workspace=self._workspace,
+            max_output_chars=self._config.agent.tool_output_max_chars,
         )
 
         # Conversational system prompt (no CTF skills/plans)
@@ -822,8 +824,8 @@ class Orchestrator:
 
             pmem = ProceduralMemory()
             procedural_hints = pmem.format_hints(description, category.value)
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log.debug(f"Procedural memory hints unavailable: {exc}")
 
         # --- Phase 2.5b: Knowledge base hints ---
         knowledge_hint = self._get_knowledge_hints(description, category.value)
@@ -845,8 +847,8 @@ class Orchestrator:
                 target_prompt = inject_target_to_prompt(self._yaml_config)
                 if target_prompt:
                     extra_ctx += "\n" + target_prompt
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log.debug(f"YAML target injection failed: {exc}")
 
         # Build scope lock to prevent agent from drifting
         scope = {
@@ -1843,25 +1845,35 @@ class Orchestrator:
 
         Returns 'low', 'medium', 'high', or 'unknown'.
         """
-        text_upper = text.upper()
-        # Look for explicit confidence markers
-        if "CONFIDENCE" in text_upper:
-            # Check text after the word CONFIDENCE
-            idx = text_upper.index("CONFIDENCE")
-            region = text_upper[idx : idx + 50]
-            if "LOW" in region:
-                return "low"
-            if "HIGH" in region:
-                return "high"
-            if "MEDIUM" in region:
-                return "medium"
-        # Fallback: scan the whole text for standalone markers
-        if "LOW" in text_upper:
-            return "low"
-        if "HIGH" in text_upper:
-            return "high"
-        if "MEDIUM" in text_upper:
-            return "medium"
+        import re as _re
+
+        # Look for explicit patterns like "confidence: LOW", "confidence level: HIGH"
+        match = _re.search(
+            r"confidence\s*(?:level\s*)?[:=\s]*\b(low|medium|high)\b",
+            text,
+            _re.IGNORECASE,
+        )
+        if match:
+            return match.group(1).lower()
+
+        # Look for numbered patterns like "3. LOW" (from reflection format)
+        match = _re.search(
+            r"\b\d+\.\s*(?:Your\s+)?confidence[^:]*:\s*(low|medium|high)\b",
+            text,
+            _re.IGNORECASE,
+        )
+        if match:
+            return match.group(1).lower()
+
+        # Fallback: standalone word on its own line or after bullet
+        match = _re.search(
+            r"(?:^|\n)\s*[-*\d.]*\s*(LOW|MEDIUM|HIGH)\s*$",
+            text,
+            _re.MULTILINE,
+        )
+        if match:
+            return match.group(1).lower()
+
         return "unknown"
 
     # ------------------------------------------------------------------
@@ -2133,8 +2145,8 @@ class Orchestrator:
                 templates = suggest_templates(indicators=indicators)
                 if templates:
                     template_hint = "\n" + format_templates_for_prompt(templates[:3])
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log.debug(f"Exploit template suggestion failed: {exc}")
 
             enriched = output + "\n\n" + findings
             if template_hint:

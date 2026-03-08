@@ -39,11 +39,25 @@ agentq
 - `leader.py` — TeamLeader: reactive coordinator with task DAG
 - `taskboard.py` — Thread-safe TaskBoard with dependency edges and assignees
 - `messages.py` — MessageBus: per-agent queues + shutdown protocol
-- `roles.py` — TeammateConfig + TEAM_PRESETS per category (web, pwn, crypto, forensics, reverse, osint, misc)
+- `roles.py` — TeammateConfig + TEAM_PRESETS per category (web, pwn, crypto, forensics, reverse, osint, ai, misc)
 - `callbacks.py` — TeamCallbacks: forwards flags/discoveries to MessageBus
 - `manager.py` — TeamManager: persistence to `~/.q/teams/`
 
-### Dynamic behavior (Phase 2)
+### Config and safety
+
+- `config.py` — `AppConfig` dataclass (mutable), sub-configs (`ModelConfig`, `AgentConfig`, `ToolConfig`, `PipelineConfig`) are frozen
+- `_KNOWN_SETTINGS_KEYS` whitelist validates `~/.q/settings.json` keys at load time — warns on typos
+- Provider fallback has infinite-recursion guard (`_is_fallback` parameter in `router.py`)
+- Context summarization uses `fast_model` to avoid expensive model for housekeeping
+
+### Tool registry
+
+- `tools/registry.py` — tool registration, dispatch, smart output truncation
+- `from_subset()` uses lazy factories — only instantiates requested tools (not all 14)
+- `max_output_chars` injected at construction, not re-read from config on every call
+- Heavy tools (browser, symbolic) use deferred imports
+
+### Dynamic behavior
 
 - Missing-info detection (password/key/token) asks early before wasting steps
 - Dynamic micro-planning:
@@ -71,7 +85,7 @@ The `ai` category handles: prompt injection, jailbreaking, secret extraction, AI
 - `/flag` command — set flag format for competition (e.g. NCSA{}, custom regex)
 - NCSA{} and ncsa{} in default flag extractor patterns
 
-## Guardrails (Phase 3)
+## Guardrails
 
 Configured in `~/.q/settings.json`:
 - `max_cost_per_challenge`
@@ -83,18 +97,28 @@ Interactive flow enforces:
 - per-turn warning if token/cost limits exceeded
 - hard block when session cost limit is reached
 
+## Exception handling policy
+
+- Cleanup/destructor paths: broad `except Exception` is OK (never crash on teardown)
+- File I/O: use `except OSError` (covers PermissionError, FileNotFoundError, etc.)
+- JSON parsing: use `except (OSError, json.JSONDecodeError)`
+- Decode operations: use `except (ValueError, UnicodeDecodeError)`
+- UI rendering: broad catch OK but must log with `debug(... exc_info=True)`
+- Never use silent `except Exception: pass` — always log at minimum
+
 ## Testing
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-Key test files:
+Key test files (73 tests):
 - `tests/test_phase3_regressions.py` — core pipeline regressions
 - `tests/test_guardrails.py` — cost/token guardrails
 - `tests/test_input_handler.py` — input handling
 - `tests/test_ai_ctf.py` — AI payloads, category, flag extractor
 - `tests/test_ai_e2e.py` — E2E with live HTTP chatbot server
+- `tests/test_team.py` — team system (TaskBoard, MessageBus, presets, isolation)
 
 E2E transcript docs:
 - `transcripts/interactive-troubleshooting.md`
@@ -109,10 +133,12 @@ Prefix-based routing in `agent/providers/router.py`:
 - `claude-` -> Anthropic
 - `gemini-` -> Google
 
+Fallback: if primary model fails and `fallback_model` is set, retries once (guarded against infinite recursion).
+
 ### Tools
 
 Tool registry: `tools/registry.py`
-Registered tools: `shell`, `python_exec`, `file_manager`, `network`, `recon`, `web_search`, `llm_interact`, `answer_user`, `browser`, `debugger`, `pwntools_session`, `netcat_session`, `symbolic`
+Registered tools: `shell`, `python_exec`, `file_manager`, `network`, `recon`, `web_search`, `llm_interact`, `answer_user`, `browser`, `debugger`, `pwntools_session`, `netcat_session`, `symbolic`, `code_analyzer`
 
 Common chat subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_user`
 
@@ -121,9 +147,11 @@ Common chat subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_u
 - `agent/orchestrator.py` — solve/chat_turn + shared ReAct loop
 - `agent/classifier.py` — Category enum (web/pwn/crypto/reverse/forensics/osint/ai/misc)
 - `agent/planner.py` — attack planner + hypothesis-driven pivoting
+- `agent/context_manager.py` — context window management + summarization (uses fast_model)
+- `agent/providers/router.py` — prefix-based provider routing + fallback with recursion guard
 - `agent/team/leader.py` — TeamLeader reactive coordinator
 - `agent/team/taskboard.py` — thread-safe TaskBoard with DAG
-- `agent/team/roles.py` — TEAM_PRESETS per category
+- `agent/team/roles.py` — TEAM_PRESETS per category (all 8 categories)
 - `ui/chat.py` — adaptive turn router + run_solve/run_chat_turn + guardrails
 - `ui/commands.py` — slash commands (`/model`, `/config`, `/flag`, `/team`, etc.)
 - `ui/selector.py` — interactive arrow-key selectors
@@ -131,9 +159,9 @@ Common chat subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_u
 - `tools/llm_interact.py` — AI target interaction (9 actions + deep-scan)
 - `tools/ai_payloads.py` — 40+ prompt injection payloads
 - `tools/file_manager.py` — safe workspace-bounded path resolution
-- `tools/registry.py` — tool registration + smart truncation
+- `tools/registry.py` — tool registration + lazy factories + smart truncation
 - `config_yaml/loader.py` — safe YAML overlay via dataclass replace
-- `config.py` — AppConfig + guardrail settings
+- `config.py` — AppConfig (mutable) + frozen sub-configs + settings key validation
 - `utils/flag_extractor.py` — flag pattern matching (incl. NCSA{})
 - `prompts/system.py` — system prompt builder (incl. AI category guidance)
 - `skills/ai.md` — AI security skill reference

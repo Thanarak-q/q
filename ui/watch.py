@@ -185,4 +185,6 @@ class WatchCallbacks:
             tree_str = self._tree.render_to_string()
             self._watch.update_tree(tree_str)
         except Exception:
-            pass
+            # UI rendering — never crash the main flow
+            from utils.logger import get_logger
+            get_logger().debug("watch tree render failed", exc_info=True)

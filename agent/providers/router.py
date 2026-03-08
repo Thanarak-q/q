@@ -32,52 +32,52 @@ class ProviderRouter:
         self._fallback_model = fallback_model
         self._log = get_logger()
 
-    def chat(self, model: str, messages: list[dict[str, Any]], **kwargs) -> dict[str, Any]:
+    def chat(self, model: str, messages: list[dict[str, Any]], _is_fallback: bool = False, **kwargs) -> dict[str, Any]:
         """Route a chat call to the appropriate provider."""
         provider_key = resolve_provider(model)
         provider = self._providers.get(provider_key)
         if provider is None:
-            if self._fallback_model:
+            if self._fallback_model and not _is_fallback:
                 self._log.warning(
                     f"Provider '{provider_key}' not configured for model '{model}', "
                     f"falling back to '{self._fallback_model}'"
                 )
-                return self.chat(self._fallback_model, messages, **kwargs)
+                return self.chat(self._fallback_model, messages, _is_fallback=True, **kwargs)
             raise ValueError(
                 f"No provider configured for model '{model}' (resolved to '{provider_key}')"
             )
         try:
             return provider.chat(model=model, messages=messages, **kwargs)
         except Exception as exc:
-            if self._fallback_model and self._fallback_model != model:
+            if self._fallback_model and self._fallback_model != model and not _is_fallback:
                 self._log.warning(
                     f"Provider '{provider_key}' failed for '{model}': {exc}. "
                     f"Falling back to '{self._fallback_model}'"
                 )
-                return self.chat(self._fallback_model, messages, **kwargs)
+                return self.chat(self._fallback_model, messages, _is_fallback=True, **kwargs)
             raise
 
-    def chat_stream(self, model: str, messages: list[dict[str, Any]], **kwargs) -> Iterator[dict[str, Any]]:
+    def chat_stream(self, model: str, messages: list[dict[str, Any]], _is_fallback: bool = False, **kwargs) -> Iterator[dict[str, Any]]:
         """Route a streaming chat call to the appropriate provider."""
         provider_key = resolve_provider(model)
         provider = self._providers.get(provider_key)
         if provider is None:
-            if self._fallback_model:
+            if self._fallback_model and not _is_fallback:
                 self._log.warning(
                     f"Provider '{provider_key}' not configured, "
                     f"falling back to '{self._fallback_model}'"
                 )
-                yield from self.chat_stream(self._fallback_model, messages, **kwargs)
+                yield from self.chat_stream(self._fallback_model, messages, _is_fallback=True, **kwargs)
                 return
             raise ValueError(f"No provider configured for model '{model}'")
         try:
             yield from provider.chat_stream(model=model, messages=messages, **kwargs)
         except Exception as exc:
-            if self._fallback_model and self._fallback_model != model:
+            if self._fallback_model and self._fallback_model != model and not _is_fallback:
                 self._log.warning(
                     f"Streaming failed for '{model}': {exc}. "
                     f"Falling back to '{self._fallback_model}'"
                 )
-                yield from self.chat_stream(self._fallback_model, messages, **kwargs)
+                yield from self.chat_stream(self._fallback_model, messages, _is_fallback=True, **kwargs)
                 return
             raise

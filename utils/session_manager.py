@@ -267,7 +267,7 @@ class SessionManager:
                     "iterations": raw.get("current_iteration", 0),
                     "flags": raw.get("flags", []),
                 })
-            except Exception:
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
                 continue
         return sessions
 

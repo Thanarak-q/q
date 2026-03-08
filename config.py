@@ -13,12 +13,39 @@ from pathlib import Path
 SETTINGS_FILE = Path.home() / ".q" / "settings.json"
 
 
+_KNOWN_SETTINGS_KEYS: set[str] = {
+    "fast_model", "default_model", "reasoning_model",
+    "openai_api_key", "anthropic_api_key", "google_api_key", "brave_api_key",
+    "temperature", "max_tokens", "streaming", "fallback_model",
+    "max_iterations", "stall_threshold", "context_limit_percent",
+    "tool_output_max_chars", "max_cost_per_challenge", "max_cost_per_turn",
+    "max_tokens_per_turn", "max_cost_per_session",
+    "shell_timeout", "python_timeout", "network_timeout", "browser_timeout_ms",
+    "docker_image", "docker_mem", "docker_cpu_quota",
+    "log_level", "log_dir", "session_dir",
+    "browser_watch", "browser_slow_mo", "browser_viewport_w", "browser_viewport_h",
+    "max_parallel_solvers", "fast_path_enabled",
+    "team_enabled", "team_max_agents", "team_budget_multiplier", "team_task_timeout",
+    "ocr_enabled", "ocr_model", "ocr_max_tokens",
+    "plan_mode", "sandbox_mode",
+}
+
+
 def _load_settings() -> dict:
     """Read ~/.q/settings.json. Returns empty dict if missing or malformed."""
     try:
-        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+    unknown = set(data.keys()) - _KNOWN_SETTINGS_KEYS
+    if unknown:
+        import sys
+        print(
+            f"Warning: unknown keys in {SETTINGS_FILE}: {', '.join(sorted(unknown))}",
+            file=sys.stderr,
+        )
+    return data
 
 
 @dataclass(frozen=True)
@@ -82,12 +109,7 @@ class BrowserVisionConfig:
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    mode: str = "single"
     max_parallel_solvers: int = 3
-    recon_max_steps: int = 4
-    analyst_max_steps: int = 6
-    solver_max_steps: int = 8
-    reporter_max_steps: int = 3
     fast_path_enabled: bool = True
 
 
@@ -106,7 +128,7 @@ class OcrConfig:
     max_tokens: int = 500
 
 
-@dataclass(frozen=True)
+@dataclass
 class AppConfig:
     model: ModelConfig = None
     agent: AgentConfig = None
@@ -121,34 +143,47 @@ class AppConfig:
     sandbox_mode: str = "docker"
 
     def __post_init__(self):
-        # Allow None fields to be set via object.__setattr__ since frozen=True
-        for field_name, default in [
-            ("model", ModelConfig()),
-            ("agent", AgentConfig()),
-            ("tool", ToolConfig()),
-            ("docker", DockerConfig()),
-            ("log", LogConfig()),
-            ("pipeline", PipelineConfig()),
-            ("browser_vision", BrowserVisionConfig()),
-            ("ocr", OcrConfig()),
-            ("team", TeamConfig()),
-        ]:
-            if getattr(self, field_name) is None:
-                object.__setattr__(self, field_name, default)
+        if self.model is None:
+            self.model = ModelConfig()
+        if self.agent is None:
+            self.agent = AgentConfig()
+        if self.tool is None:
+            self.tool = ToolConfig()
+        if self.docker is None:
+            self.docker = DockerConfig()
+        if self.log is None:
+            self.log = LogConfig()
+        if self.pipeline is None:
+            self.pipeline = PipelineConfig()
+        if self.browser_vision is None:
+            self.browser_vision = BrowserVisionConfig()
+        if self.ocr is None:
+            self.ocr = OcrConfig()
+        if self.team is None:
+            self.team = TeamConfig()
 
 
-# Pricing per 1M tokens (USD)
+# Pricing per 1M tokens (USD) — updated 2025-Q4
 MODEL_PRICING: dict[str, dict[str, float]] = {
+    # OpenAI
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "o3": {"input": 10.00, "output": 40.00},
     "o3-mini": {"input": 1.10, "output": 4.40},
+    "o4-mini": {"input": 1.10, "output": 4.40},
     "gpt-4-turbo": {"input": 10.00, "output": 30.00},
+    # Anthropic
+    "claude-opus-4": {"input": 15.00, "output": 75.00},
+    "claude-opus-4-6": {"input": 15.00, "output": 75.00},
+    "claude-sonnet-4": {"input": 3.00, "output": 15.00},
     "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
     "claude-sonnet-4-5-20250514": {"input": 3.00, "output": 15.00},
+    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
     "claude-haiku-3-5": {"input": 0.80, "output": 4.00},
-    "claude-opus-4": {"input": 15.00, "output": 75.00},
+    "claude-haiku-4-5": {"input": 0.80, "output": 4.00},
+    # Google
     "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
+    "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
     "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
 }
 
@@ -212,10 +247,6 @@ def load_config() -> AppConfig:
 
     pipeline = PipelineConfig(
         max_parallel_solvers=s.get("max_parallel_solvers", 3),
-        recon_max_steps=s.get("recon_max_steps", 4),
-        analyst_max_steps=s.get("analyst_max_steps", 6),
-        solver_max_steps=s.get("solver_max_steps", 8),
-        reporter_max_steps=s.get("reporter_max_steps", 3),
         fast_path_enabled=s.get("fast_path_enabled", True),
     )
 

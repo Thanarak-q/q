@@ -415,8 +415,8 @@ def setup_docker(config: AppConfig) -> Any:
             if detected == "local":
                 log.info("Docker unavailable — falling back to local execution.")
                 return None
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug(f"Sandbox auto-detect failed: {exc}")
 
     if config.sandbox_mode not in ("docker", "docker_sudo"):
         return None
@@ -1015,8 +1015,9 @@ def _run_team_solve(
                 config=state.config,
             )
             category = classified.value
-        except Exception:
-            pass
+        except Exception as exc:
+            from utils.logger import get_logger
+            get_logger().debug(f"Team category classification failed: {exc}")
 
     display.show_info(f"Team mode: assembling {category} team...")
 

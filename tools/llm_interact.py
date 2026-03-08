@@ -311,7 +311,7 @@ class LLMInteractTool(BaseTool):
                         sub_flags = self._detect_flags(decoded)
                         if sub_flags:
                             findings.append(f"Flag in decoded base64: {', '.join(sub_flags)}")
-                except Exception:
+                except (ValueError, UnicodeDecodeError):
                     pass
 
         # Hex string detection
@@ -326,7 +326,7 @@ class LLMInteractTool(BaseTool):
                         sub_flags = self._detect_flags(decoded)
                         if sub_flags:
                             findings.append(f"Flag in decoded hex: {', '.join(sub_flags)}")
-                except Exception:
+                except (ValueError, UnicodeDecodeError):
                     pass
 
         # System prompt leak indicators
@@ -428,8 +428,8 @@ class LLMInteractTool(BaseTool):
             tool = reg.get("browser")
             if isinstance(tool, BrowserTool):
                 browser = tool
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log.debug(f"Could not get browser from registry: {exc}")
 
         if browser is None:
             browser = BrowserTool()
@@ -791,7 +791,7 @@ class LLMInteractTool(BaseTool):
                     sub_flags = LLMInteractTool._detect_flags(decoded)
                     if sub_flags:
                         findings.append(f"[FLAG DETECTED in base64] {', '.join(sub_flags)}")
-            except Exception:
+            except (ValueError, UnicodeDecodeError):
                 pass
 
         # Hex detection
@@ -802,7 +802,7 @@ class LLMInteractTool(BaseTool):
                 sub_flags = LLMInteractTool._detect_flags(decoded)
                 if sub_flags:
                     findings.append(f"[FLAG DETECTED in hex] {', '.join(sub_flags)}")
-            except Exception:
+            except (ValueError, UnicodeDecodeError):
                 pass
 
         # ROT13

@@ -154,9 +154,11 @@ class ContextManager:
             if isinstance(content, str) and content:
                 summary_text += f"[{role}]: {content[:500]}\n"
 
+        # Use the fast model for summarization to save cost
+        summary_model = self._config.model.fast_model or self._model
         try:
             result = self._client.chat(
-                model=self._model,
+                model=summary_model,
                 messages=[
                     {"role": "system", "content": CONTEXT_SUMMARY_REQUEST},
                     {"role": "user", "content": summary_text},

@@ -105,8 +105,10 @@ def _sync_chat_orchestrator_config(state: "ChatState") -> None:
             orch._context._client = provider
             orch._context._config = state.config
             orch._context._model = state.current_model
-    except Exception:
+    except Exception as exc:
         # Fall back to rebuilding on next turn if live-sync fails.
+        from utils.logger import get_logger
+        get_logger().debug(f"Live model sync failed, will rebuild: {exc}")
         state._chat_orchestrator = None
 
 
@@ -377,8 +379,9 @@ def _cmd_config(arg: str, state: ChatState, display: Display) -> bool:
             )
             if qcfg.target and qcfg.target.focus:
                 config_data["Focus"] = ", ".join(qcfg.target.focus)
-        except Exception:
-            pass
+        except Exception as exc:
+            from utils.logger import get_logger
+            get_logger().debug(f"YAML config display failed: {exc}")
 
     display.show_config(config_data)
     return False

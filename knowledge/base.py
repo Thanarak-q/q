@@ -6,11 +6,14 @@ Uses JSON + keyword matching. No vector DB or embeddings required.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 class KnowledgeBase:
@@ -55,8 +58,8 @@ class KnowledgeBase:
             store = EmbeddingStore()
             if store.available():
                 store.index_entry(entry)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug(f"Auto-index to vector store failed: {exc}")
 
     def search(
         self,
@@ -106,8 +109,8 @@ class KnowledgeBase:
                 results = store.search_similar(query, category=category, limit=limit)
                 if results:
                     return results
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug(f"Semantic search failed, falling back to keyword: {exc}")
         return self.search(query, category=category, limit=limit)
 
     def get_stats(self) -> dict[str, Any]:
