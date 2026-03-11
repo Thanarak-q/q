@@ -169,10 +169,15 @@ class DebuggerTool(BaseTool):
         if not gdb_path:
             return "[ERROR] gdb is not installed or not in PATH."
 
+        import os
+        if not os.path.isfile(binary):
+            return f"[ERROR] Binary not found: {binary}"
+
+        import shlex
         args_str = kwargs.get("args", "")
-        cmd = f"gdb -q {binary}"
+        cmd = f"gdb -q {shlex.quote(binary)}"
         if args_str:
-            cmd = f"gdb -q --args {binary} {args_str}"
+            cmd = f"gdb -q --args {shlex.quote(binary)} {args_str}"
 
         try:
             self._proc = pexpect.spawn(cmd, timeout=DEFAULT_TIMEOUT, encoding="utf-8")

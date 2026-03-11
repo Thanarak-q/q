@@ -37,5 +37,11 @@ def create_provider(model_config) -> ProviderRouter:
                 "Run: pip install google-genai"
             )
 
+    # Zhipu AI GLM (optional)
+    glm_key = getattr(model_config, "glm_api_key", "")
+    if glm_key:
+        from agent.providers.glm_provider import GLMProvider
+        providers["glm"] = GLMProvider(api_key=glm_key)
+
     fallback = getattr(model_config, "fallback_model", "")
     return ProviderRouter(providers=providers, fallback_model=fallback)

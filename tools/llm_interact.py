@@ -688,6 +688,10 @@ class LLMInteractTool(BaseTool):
                 headers = json.loads(raw_headers)
             except json.JSONDecodeError:
                 pass
+            # Validate headers — reject CRLF injection
+            for k, v in list(headers.items()):
+                if '\r' in k or '\n' in k or '\r' in str(v) or '\n' in str(v):
+                    headers.pop(k)
 
         # Parse extra body fields
         extra_body: dict[str, Any] = {}

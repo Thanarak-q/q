@@ -572,6 +572,19 @@ class Orchestrator:
             steps=result.iterations,
         )
 
+        # Desktop notification
+        try:
+            from utils.notify import notify_solve_complete
+
+            notify_solve_complete(
+                success=result.success,
+                flags=result.flags,
+                challenge=description[:80],
+                cost=result.cost_usd,
+            )
+        except Exception:
+            pass  # notification is best-effort
+
         return result
 
     def resume(
@@ -811,11 +824,16 @@ class Orchestrator:
         if self._audit:
             self._audit.log_plan(model=self._config.model.fast_model, plan=plan)
 
-        # Select initial model
-        self._current_model = select_model_for_task(
-            category, self._config, is_escalated=False
-        )
-        self._log.info(f"Initial model: {self._current_model}")
+        # Select initial model (per-category override takes priority)
+        cat_model = self._config.model.get_model_for_category(category.value)
+        if cat_model:
+            self._current_model = cat_model
+            self._log.info(f"Category model override: {self._current_model}")
+        else:
+            self._current_model = select_model_for_task(
+                category, self._config, is_escalated=False
+            )
+            self._log.info(f"Initial model: {self._current_model}")
 
         # --- Phase 2.5: Procedural memory hints ---
         procedural_hints = ""

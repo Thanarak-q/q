@@ -43,6 +43,9 @@ COMMAND_HELP: dict[str, str] = {
     "/team tasks": "Show team task board",
     "/team messages": "Show team message log",
     "/team agents": "Show active teammates with status",
+    # Analysis
+    "/suggest": "Suggest next action based on current context",
+    "/compare": "Compare solve approaches from team members",
     # Plan mode
     "/plan [on|off]": "Toggle plan mode (review, refine, and approve plan before solving)",
     # Settings
@@ -81,6 +84,10 @@ _SELECTOR_MODELS: list[str] = [
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
+    # Zhipu AI GLM
+    "glm-4",
+    "glm-4-plus",
+    "glm-4-flash",
 ]
 
 # Valid categories
@@ -161,6 +168,8 @@ def handle_command(
         "/team": _cmd_team,
         "/plan": _cmd_plan,
         "/flag": _cmd_flag,
+        "/suggest": _cmd_suggest,
+        "/compare": _cmd_compare,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -1241,6 +1250,144 @@ def _cmd_flag(arg: str, state: ChatState, display: Display) -> bool:
 
     state.flag_pattern = a
     display.show_info(f"Flag pattern set: {a}")
+    return False
+
+
+def _cmd_suggest(arg: str, state: ChatState, display: Display) -> bool:
+    """Suggest next action based on current context and history."""
+    if not state.solve_history:
+        display.show_info("No solve history yet. Start a challenge first.")
+        return False
+
+    last = state.solve_history[-1]
+    category = last.get("category", "misc")
+
+    # Get procedural memory suggestions
+    suggestions: list[str] = []
+    try:
+        from knowledge.procedural import ProceduralMemory
+
+        pmem = ProceduralMemory()
+        procs, antis = pmem.get_suggestions(
+            last.get("description", ""), category, limit=3
+        )
+        if procs:
+            for proc in procs:
+                chain = " -> ".join(proc.technique_chain)
+                suggestions.append(
+                    f"Try: {chain} (worked {proc.times_used}x, "
+                    f"{proc.success_rate:.0%} success)"
+                )
+        if antis:
+            for anti in antis:
+                failed = ", ".join(anti.failed_techniques)
+                suggestions.append(f"Avoid: {failed} -- {anti.lesson}")
+    except Exception:
+        pass
+
+    if not suggestions:
+        # Fallback: generic suggestions based on category
+        category_tips = {
+            "web": [
+                "Try directory enumeration with gobuster/dirsearch",
+                "Check for SQL injection on input fields",
+                "Look at cookies and JWT tokens",
+            ],
+            "pwn": [
+                "Run checksec to identify protections",
+                "Look for buffer overflow with pattern_create",
+                "Check for format string vulnerabilities",
+            ],
+            "crypto": [
+                "Identify the cipher/algorithm first",
+                "Check for weak key generation",
+                "Try known-plaintext attacks",
+            ],
+            "reverse": [
+                "Start with strings and file identification",
+                "Use Ghidra/IDA for disassembly",
+                "Look for hardcoded keys or comparison functions",
+            ],
+            "forensics": [
+                "Run binwalk for embedded files",
+                "Check metadata with exiftool",
+                "Look at file headers for magic bytes",
+            ],
+            "osint": [
+                "Start with exiftool on any images",
+                "Check Wayback Machine for historical data",
+                "Use sherlock for username lookups",
+            ],
+            "ai": [
+                "Try direct prompt injection first",
+                "Attempt roleplay-based jailbreaks",
+                "Use encoding tricks (base64, ROT13)",
+            ],
+            "misc": [
+                "Identify the challenge type first",
+                "Look for hidden data in files",
+                "Try common CTF patterns",
+            ],
+        }
+        suggestions = category_tips.get(category, category_tips["misc"])
+
+    display.console.print(f"\n  [bold]Suggestions for {category}:[/bold]\n")
+    for i, s in enumerate(suggestions, 1):
+        display.console.print(f"  {i}. {s}")
+    display.console.print()
+    return False
+
+
+def _cmd_compare(arg: str, state: ChatState, display: Display) -> bool:
+    """Compare solve approaches from team members."""
+    if not state.config.team.enabled:
+        display.show_info("Team mode is not enabled. Use /team on first.")
+        return False
+
+    try:
+        from agent.team.manager import TeamManager
+
+        mgr = TeamManager()
+        teams = mgr.list_teams()
+        if not teams:
+            display.show_info("No team sessions found.")
+            return False
+
+        # Show latest team's results
+        latest = teams[-1]
+        team_data = mgr.load_team(latest["team_id"])
+        if not team_data:
+            display.show_info("Could not load team data.")
+            return False
+
+        display.console.print(
+            f"\n  [bold]Team Comparison: {latest.get('team_id', '?')}[/bold]\n"
+        )
+
+        agents = team_data.get("agents", {})
+        if not agents:
+            display.show_info("No agent results to compare.")
+            return False
+
+        for name, info in agents.items():
+            status = info.get("status", "?")
+            icon = {"completed": "[green]✓[/green]", "failed": "[red]✗[/red]"}.get(
+                status, "[yellow]…[/yellow]"
+            )
+            result = info.get("result", "")[:100]
+            steps = info.get("steps", "?")
+            cost = info.get("cost", 0.0)
+            display.console.print(
+                f"  {icon} [cyan]{name}[/cyan]: "
+                f"{steps} steps, ${cost:.4f}"
+            )
+            if result:
+                display.console.print(f"    Result: {result}")
+        display.console.print()
+
+    except Exception as exc:
+        display.show_error(f"Compare failed: {exc}")
+
     return False
 
 

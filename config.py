@@ -15,7 +15,7 @@ SETTINGS_FILE = Path.home() / ".q" / "settings.json"
 
 _KNOWN_SETTINGS_KEYS: set[str] = {
     "fast_model", "default_model", "reasoning_model",
-    "openai_api_key", "anthropic_api_key", "google_api_key", "brave_api_key",
+    "openai_api_key", "anthropic_api_key", "google_api_key", "glm_api_key", "brave_api_key",
     "temperature", "max_tokens", "streaming", "fallback_model",
     "max_iterations", "stall_threshold", "context_limit_percent",
     "tool_output_max_chars", "max_cost_per_challenge", "max_cost_per_turn",
@@ -28,6 +28,7 @@ _KNOWN_SETTINGS_KEYS: set[str] = {
     "team_enabled", "team_max_agents", "team_budget_multiplier", "team_task_timeout",
     "ocr_enabled", "ocr_model", "ocr_max_tokens",
     "plan_mode", "sandbox_mode",
+    "category_models",
 }
 
 
@@ -59,8 +60,17 @@ class ModelConfig:
     streaming: bool = True
     anthropic_api_key: str = ""
     google_api_key: str = ""
+    glm_api_key: str = ""
     fallback_model: str = ""
     brave_api_key: str = ""
+    category_models: tuple[tuple[str, str], ...] = ()
+
+    def get_model_for_category(self, category: str) -> str | None:
+        """Return the model override for a category, or None."""
+        for cat, model in self.category_models:
+            if cat == category:
+                return model
+        return None
 
 
 @dataclass(frozen=True)
@@ -185,6 +195,14 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "gemini-2.0-flash": {"input": 0.10, "output": 0.40},
     "gemini-2.5-flash": {"input": 0.15, "output": 0.60},
     "gemini-2.5-pro": {"input": 1.25, "output": 10.00},
+    # Zhipu AI GLM (prices in USD, converted from RMB at ~7 RMB/USD)
+    "glm-4": {"input": 14.00, "output": 14.00},
+    "glm-4-plus": {"input": 14.00, "output": 14.00},
+    "glm-4-air": {"input": 0.14, "output": 0.14},
+    "glm-4-airx": {"input": 0.14, "output": 0.14},
+    "glm-4-long": {"input": 0.14, "output": 0.14},
+    "glm-4-flash": {"input": 0.00, "output": 0.00},
+    "glm-4-flashx": {"input": 0.00, "output": 0.00},
 }
 
 
@@ -204,7 +222,11 @@ def load_config() -> AppConfig:
             "anthropic_api_key", os.getenv("ANTHROPIC_API_KEY", "")
         ),
         google_api_key=s.get("google_api_key", os.getenv("GOOGLE_API_KEY", "")),
+        glm_api_key=s.get("glm_api_key", os.getenv("GLM_API_KEY", "")),
         fallback_model=s.get("fallback_model", ""),
+        category_models=tuple(
+            (k, v) for k, v in s.get("category_models", {}).items()
+        ),
         brave_api_key=s.get("brave_api_key", os.getenv("BRAVE_API_KEY", "")),
     )
 

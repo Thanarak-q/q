@@ -132,15 +132,28 @@ Prefix-based routing in `agent/providers/router.py`:
 - `gpt-`, `o3`, `o4` -> OpenAI
 - `claude-` -> Anthropic
 - `gemini-` -> Google
+- `glm-` -> Zhipu AI GLM
+
+Per-category model overrides via `category_models` in `~/.q/settings.json`:
+```json
+{"category_models": {"crypto": "o3", "web": "claude-sonnet-4-5", "pwn": "claude-sonnet-4-6"}}
+```
 
 Fallback: if primary model fails and `fallback_model` is set, retries once (guarded against infinite recursion).
 
 ### Tools
 
 Tool registry: `tools/registry.py`
-Registered tools: `shell`, `python_exec`, `file_manager`, `network`, `recon`, `web_search`, `llm_interact`, `answer_user`, `browser`, `debugger`, `pwntools_session`, `netcat_session`, `symbolic`, `code_analyzer`
+Registered tools (15): `shell`, `python_exec`, `file_manager`, `network`, `recon`, `web_search`, `llm_interact`, `answer_user`, `browser`, `debugger`, `pwntools_session`, `netcat_session`, `symbolic`, `code_analyzer`
 
 Common chat subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_user`
+
+### Team system
+
+- `taskboard.py` has deadlock detection via DFS cycle detection + automatic breaking
+- Leader monitor loop checks for deadlocks every iteration
+- `/suggest` command provides procedural memory hints per category
+- `/compare` command shows team member solve approach comparison
 
 ## Key files
 
@@ -160,8 +173,12 @@ Common chat subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_u
 - `tools/ai_payloads.py` — 40+ prompt injection payloads
 - `tools/file_manager.py` — safe workspace-bounded path resolution
 - `tools/registry.py` — tool registration + lazy factories + smart truncation
+- `tools/code_analyzer_tool.py` — BaseTool wrapper for static vuln scanner
 - `config_yaml/loader.py` — safe YAML overlay via dataclass replace
 - `config.py` — AppConfig (mutable) + frozen sub-configs + settings key validation
 - `utils/flag_extractor.py` — flag pattern matching (incl. NCSA{})
+- `utils/notify.py` — cross-platform desktop notifications (notify-send / osascript)
 - `prompts/system.py` — system prompt builder (incl. AI category guidance)
 - `skills/ai.md` — AI security skill reference
+- `skills/osint.md` — comprehensive OSINT skill (700+ lines)
+- `agent/providers/glm_provider.py` — Zhipu AI GLM provider (OpenAI-compatible)

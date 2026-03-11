@@ -1,6 +1,6 @@
 # Q Roadmap
 
-> Last updated: 2026-03-06
+> Last updated: 2026-03-11
 
 ## The Big Picture
 
@@ -418,7 +418,7 @@ Ship as **v0.6.0 — "The Intelligence Update"**:
 - [x] Team system — reactive leader, task DAG, MessageBus, presets for 7 categories
 - [x] E2E tests with live HTTP chatbot server
 
-### v1.0.0 — "Competition Ready" (planned):
+### v1.0.0 — "Competition Ready":
 
 - [x] AI team preset in TEAM_PRESETS
 - [x] Team mode tests (30 tests in test_team.py)
@@ -427,21 +427,97 @@ Ship as **v0.6.0 — "The Intelligence Update"**:
 - [x] Provider fallback recursion guard
 - [x] Summarization cost optimization (uses fast_model)
 - [x] Exception handling audit (narrowed ~20 broad catches, eliminated silent passes)
+- [x] Security audit fixes (shell injection, path traversal, CRLF, f-string injection, GDB injection)
+- [x] GLM provider (Zhipu AI) + per-category model selection
+- [x] code_analyzer registered as agent-accessible tool
+- [x] Team deadlock detection (DFS cycle detection + auto-break)
+- [x] Desktop notifications on solve completion
+- [x] /suggest and /compare slash commands
+- [x] OSINT skill expansion (146 → 731 lines)
 - [ ] Streaming/SSE support for `llm_interact`
 - [ ] Rate-limit tracking per target
 - [ ] Benchmark suite for AI challenges
+
+### v1.1.0 — "The CAI-Killer Update" (planned):
+
+Inspired by: [CAI framework](https://github.com/aliasrobotics/cai) (41/45 flags at Neurogrid, $50K prize),
+[Anthropic 2026 Agentic Coding Trends](https://resources.anthropic.com/2026-agentic-coding-trends-report),
+[Claude Code agent teams](https://code.claude.com/docs/en/agent-teams),
+[CTFAgent](https://www.sciencedirect.com/science/article/abs/pii/S2214212625003424) (plan-and-execute with stateful task tree)
+
+**P0 — Agent Handoffs (CAI pattern):**
+- [ ] Tool-based agent handoffs: `transfer_to_flag_discriminator` separates exploitation from flag verification
+- [ ] Specialized sub-agents per phase: recon agent, exploit agent, flag validator agent
+- [ ] Handoff filters: agents only see relevant context from predecessor
+- [ ] Why: CAI's segregation of duties (different models for different tasks) is their #1 innovation
+
+**P0 — MCP Integration:**
+- [ ] MCP server protocol for external tool integration (HTTP/SSE + stdio)
+- [ ] Wrap CTF platform APIs as MCP servers (CTFd flag submission, challenge download)
+- [ ] MCP tool search: dynamically load tools when >10% context consumed
+- [ ] Why: industry standard (100M+ monthly downloads), extensible without core changes
+
+**P1 — Streaming Output:**
+- [ ] Token-by-token streaming to UI (not batch)
+- [ ] Spinner until tool_call, then stream tool output
+- [ ] Verbose mode: stream everything; minimal mode: stream summaries only
+- [ ] Why: perceived speed is as important as actual speed
+
+**P1 — Extended Task Horizons:**
+- [ ] Multi-phase solves spanning hours (pause/resume with full state)
+- [ ] Automatic checkpoint at phase boundaries (recon → exploit → post-exploit)
+- [ ] Background solve with notification on completion
+- [ ] Why: Anthropic's #3 trend — agents moving from minutes to hours
+
+**P1 — Vector Embeddings for Knowledge Base:**
+- [ ] Replace keyword search with sentence-transformer embeddings + Chroma DB
+- [ ] Auto-index past solves from sessions/ directory
+- [ ] Retrieve top-3 similar writeups during planning phase
+- [ ] Why: RAG materially improves solve rates (Byte Breach, CTFAgent)
+
+**P2 — Stop Hooks for Self-Verification:**
+- [ ] Fire hook when agent declares "done" — verify flag format, check answer quality
+- [ ] Return `ok: false` to force agent to continue if verification fails
+- [ ] Prevent premature answer_user calls with low-confidence answers
+- [ ] Why: Claude Code's stop hooks catch incomplete work before returning
+
+**P2 — Competing Hypothesis Mode:**
+- [ ] Spawn N agents testing different theories in parallel
+- [ ] First agent to find flag wins; others are cancelled
+- [ ] Share negative results across agents (anti-pattern propagation)
+- [ ] Why: CAI's multi-agent coordination + Claude Code agent teams pattern
+
+**P2 — Cost-Efficient Model Routing:**
+- [ ] Fast/cheap model for classification + planning (haiku/flash)
+- [ ] Expensive model only for complex reasoning steps
+- [ ] Dynamic model escalation based on confidence/stall detection
+- [ ] Target: <$0.02/challenge for easy, <$0.10/challenge for medium
+- [ ] Why: CAI reduced 1B token costs from $5,940 to $119 with specialized routing
+
+**P3 — Deterministic Hooks System Expansion:**
+- [ ] PreToolUse hooks: validate tool selections per category
+- [ ] PostToolUse hooks: auto-run security checks after code generation
+- [ ] PermissionRequest hooks: approve/deny tool use programmatically
+- [ ] Why: Claude Code's hooks bridge "let AI decide" and "I need guarantees"
+
+**P3 — Flag Discrimination Agent:**
+- [ ] Dedicated agent that validates flag format, checks for false positives
+- [ ] Cross-reference with known flag patterns (base64, hex, nested encoding)
+- [ ] Auto-submit to CTFd platform via MCP
+- [ ] Why: CAI's flag_discriminator_agent prevents false flag submissions
 
 ---
 
 ## Performance Targets
 
-| Metric | v0.5.0 | v0.8.0 | v0.9.0 (current) |
-|--------|--------|--------|-------------------|
-| Easy challenges | 3 steps, $0.04 | 3 steps, $0.04 | 2 steps, $0.02 |
-| Medium challenges | ~10 steps, ~$0.15 | 6 steps, $0.08 | 5 steps, $0.06 |
-| Hard pwn/reverse | Mostly fails | 50% solve rate | 65% solve rate |
-| Interactive exploits | Not supported | Supported (IATs) | + symbolic verify |
-| AI security | Not supported | Not supported | Supported (llm_interact + payloads) |
+| Metric | v0.5.0 | v0.9.0 | v1.0.0 (current) | v1.1.0 (target) |
+|--------|--------|--------|-------------------|-----------------|
+| Easy challenges | 3 steps, $0.04 | 2 steps, $0.02 | 2 steps, $0.02 | 2 steps, <$0.01 |
+| Medium challenges | ~10 steps, ~$0.15 | 5 steps, $0.06 | 4 steps, $0.05 | 3 steps, <$0.03 |
+| Hard pwn/reverse | Mostly fails | 65% solve rate | 70% solve rate | 85% (handoffs + competing hypotheses) |
+| Interactive exploits | Not supported | + symbolic verify | + code_analyzer | + MCP tools |
+| AI security | Not supported | Supported | + expanded OSINT | + flag discriminator |
+| Jeopardy CTFs | ~20% | ~50% | ~55% | 75% (CAI-level) |
 
 ---
 
@@ -449,12 +525,24 @@ Ship as **v0.6.0 — "The Intelligence Update"**:
 
 1. **Simple > Complex** — Q v0.3 multi-agent was worse than v0.4 single-agent. Don't repeat this mistake. Add complexity only where it's proven to help (IATs, RAG).
 
-2. **EnIGMA's IATs are the #1 gap** — Interactive tool sessions (gdb, pwntools, netcat) are what separate toy CTF agents from real ones.
+2. **EnIGMA's IATs are the #1 gap** — Interactive tool sessions (gdb, pwntools, netcat) are what separate toy CTF agents from real ones. ✅ Done.
 
 3. **RAG works** — Byte Breach proved it. Models without writeup context underperform significantly.
 
-4. **Checkpoints build trust** — Claude Code's most loved feature. Users will let Q try ambitious things if they can rewind.
+4. **Checkpoints build trust** — Claude Code's most loved feature. Users will let Q try ambitious things if they can rewind. ✅ Done.
 
-5. **Claude > GPT for binary exploitation** — 74% vs 58%. Multi-provider support is worth building.
+5. **Claude > GPT for binary exploitation** — 74% vs 58%. Multi-provider support is worth building. ✅ Done (4 providers + per-category routing).
 
 6. **$181/point is achievable** — Buttercup (Trail of Bits) proved competitive CTF AI doesn't need expensive models. Smart tool use > raw model power.
+
+7. **CAI's handoff pattern is the next leap** — Tool-based agent handoffs (transfer_to_flag_discriminator) create specialized chains. Exploitation agent → flag validator agent is segregation of duties that catches false positives.
+
+8. **Jeopardy CTFs are a "solved game"** — CAI captured 41/45 flags at Neurogrid ($50K prize). The gap is model routing + specialized agents, not raw model capability.
+
+9. **MCP is the extensibility standard** — 100M+ monthly downloads, 3000+ servers. Building custom tool integrations is obsolete; MCP wrapping is the way.
+
+10. **Multi-agent > single-agent for hard CTFs** — Anthropic's 2026 report: "Multi-agent systems replace single-agent workflows, enabling parallel reasoning across separate context windows." Agent teams for competing hypotheses.
+
+11. **Deterministic hooks + probabilistic reasoning** — Claude Code's hybrid approach: hooks handle hard constraints (security, formatting), LLM handles adaptive decisions. Don't try to prompt-engineer safety; enforce it deterministically.
+
+12. **Cost efficiency is a competitive advantage** — CAI reduced 1B token costs from $5,940 to $119 with specialized model architecture. Use cheap models for classification/planning, expensive models only for complex reasoning.

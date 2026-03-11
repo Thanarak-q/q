@@ -202,9 +202,9 @@ class PwntoolsSessionTool(BaseTool):
             if ":" not in target:
                 return "[ERROR] Remote target must be 'host:port'."
             host, port = target.rsplit(":", 1)
-            code = f"conn = remote('{host}', {port})"
+            code = f"conn = remote({repr(host)}, {int(port)})"
         else:
-            code = f"conn = process('{target}')"
+            code = f"conn = process({repr(target)})"
 
         result = self._run_python(code, timeout=15)
         if "[ERROR]" in result or "[TIMEOUT]" in result:
@@ -262,9 +262,12 @@ class PwntoolsSessionTool(BaseTool):
         target = kwargs.get("target", "")
         if not target:
             return "[ERROR] 'target' (path to ELF) is required."
+        import os.path
+        if not os.path.isfile(target):
+            return f"[ERROR] File not found: {target}"
         self._start_python()
         code = textwrap.dedent(f"""\
-            _e = ELF('{target}', checksec=False)
+            _e = ELF({repr(target)}, checksec=False)
             _info = []
             _info.append(f"Arch: {{_e.arch}}")
             _info.append(f"Bits: {{_e.bits}}")
@@ -287,9 +290,12 @@ class PwntoolsSessionTool(BaseTool):
         target = kwargs.get("target", "")
         if not target:
             return "[ERROR] 'target' (path to ELF) is required."
+        import os.path
+        if not os.path.isfile(target):
+            return f"[ERROR] File not found: {target}"
         self._start_python()
         code = textwrap.dedent(f"""\
-            _e = ELF('{target}', checksec=False)
+            _e = ELF({repr(target)}, checksec=False)
             _r = ROP(_e)
             print(_r.dump())""")
         exec_code = f"exec('''{code}''')"

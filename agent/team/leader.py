@@ -462,6 +462,14 @@ class TeamLeader:
                 with self._results_lock:
                     return self._build_result()
 
+            # Deadlock detection — break circular dependencies
+            cycles = tb.detect_deadlocks()
+            for cycle in cycles:
+                cycle_str = " -> ".join(cycle)
+                _log.warning(f"[lead] Deadlock detected: {cycle_str}")
+                self._cb.on_phase("Team", f"Breaking deadlock: {cycle_str}")
+                tb.break_deadlock(cycle)
+
             # Check if all threads dead
             alive = [t for t in self._threads.values() if t.is_alive()]
             if not alive:

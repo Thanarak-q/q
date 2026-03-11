@@ -231,7 +231,17 @@ class SessionManager:
         Returns:
             SessionData if found, None otherwise.
         """
+        # Validate session_id to prevent path traversal
+        if not session_id or '/' in session_id or '\\' in session_id or '..' in session_id:
+            self._log.error(f"Invalid session ID: {session_id}")
+            return None
         fpath = self._dir / f"{session_id}.json"
+        # Ensure resolved path is within session directory
+        try:
+            fpath.resolve().relative_to(self._dir.resolve())
+        except ValueError:
+            self._log.error(f"Session path escapes session directory: {session_id}")
+            return None
         if not fpath.exists():
             self._log.error(f"Session not found: {session_id}")
             return None

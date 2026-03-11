@@ -105,12 +105,12 @@ class PythonExecTool(BaseTool):
             tmp_path = Path(tmp.name)
 
         try:
-            cmd = f"python3 {tmp_path}"
+            cmd_list = ["python3", str(tmp_path)]
             if args:
-                cmd += f" {args}"
+                import shlex
+                cmd_list.extend(shlex.split(args))
             result = subprocess.run(
-                cmd,
-                shell=True,
+                cmd_list,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,

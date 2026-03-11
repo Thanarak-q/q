@@ -148,6 +148,9 @@ class ToolRegistry:
         from tools.symbolic import SymbolicTool
         self.register(SymbolicTool())
 
+        from tools.code_analyzer_tool import CodeAnalyzerTool
+        self.register(CodeAnalyzerTool())
+
     @classmethod
     def from_subset(
         cls,
@@ -205,6 +208,10 @@ class ToolRegistry:
             from tools.submit_deliverable import SubmitDeliverableTool
             return SubmitDeliverableTool()
 
+        def _lazy_code_analyzer():
+            from tools.code_analyzer_tool import CodeAnalyzerTool
+            return CodeAnalyzerTool()
+
         _TOOL_FACTORIES.update({
             "browser": _lazy_browser,
             "debugger": _lazy_debugger,
@@ -212,6 +219,7 @@ class ToolRegistry:
             "netcat_session": _lazy_netcat,
             "symbolic": _lazy_symbolic,
             "submit_deliverable": _lazy_submit,
+            "code_analyzer": _lazy_code_analyzer,
         })
 
         filtered = cls.__new__(cls)

@@ -13,6 +13,7 @@ PROVIDER_PREFIXES: list[tuple[str, str]] = [
     ("o1", "openai"),
     ("claude-", "anthropic"),
     ("gemini-", "google"),
+    ("glm-", "glm"),
 ]
 
 

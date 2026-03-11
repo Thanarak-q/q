@@ -247,6 +247,68 @@ class TaskBoard:
                 lines.append(f"  {status_icon} {t.id}: {t.subject}{owner}{blocked}")
             return "\n".join(lines)
 
+    def detect_deadlocks(self) -> list[list[str]]:
+        """Detect circular dependency cycles in the task DAG.
+
+        Returns a list of cycles (each cycle is a list of task IDs).
+        """
+        with self._lock:
+            return self._find_cycles()
+
+    def _find_cycles(self) -> list[list[str]]:
+        """Find all cycles using DFS. Must hold lock."""
+        visited: set[str] = set()
+        on_stack: set[str] = set()
+        cycles: list[list[str]] = []
+        path: list[str] = []
+
+        def dfs(task_id: str) -> None:
+            visited.add(task_id)
+            on_stack.add(task_id)
+            path.append(task_id)
+
+            task = self._tasks.get(task_id)
+            if task:
+                for dep_id in task.blocked_by:
+                    dep = self._tasks.get(dep_id)
+                    if not dep or dep.status == "completed":
+                        continue
+                    if dep_id in on_stack:
+                        # Found a cycle — extract it
+                        idx = path.index(dep_id)
+                        cycles.append(list(path[idx:]))
+                    elif dep_id not in visited:
+                        dfs(dep_id)
+
+            path.pop()
+            on_stack.discard(task_id)
+
+        for tid in list(self._tasks.keys()):
+            if tid not in visited:
+                task = self._tasks[tid]
+                if task.status not in ("completed", "failed"):
+                    dfs(tid)
+
+        return cycles
+
+    def break_deadlock(self, cycle: list[str]) -> str | None:
+        """Break a deadlock cycle by failing the lowest-priority task.
+
+        Returns the ID of the failed task, or None if cycle is empty.
+        """
+        with self._lock:
+            if not cycle:
+                return None
+            # Fail the last task in the cycle (arbitrary but deterministic)
+            victim_id = cycle[-1]
+            task = self._tasks.get(victim_id)
+            if task and task.status not in ("completed", "failed"):
+                task.status = "failed"
+                task.result = f"Failed to break deadlock cycle: {' -> '.join(cycle)}"
+                task.updated_at = time.time()
+                return victim_id
+            return None
+
     def _is_blocked(self, task: Task) -> bool:
         """Check if any blocker is still incomplete. Must hold lock."""
         for blocker_id in task.blocked_by:
