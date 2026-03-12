@@ -294,6 +294,24 @@ def summarize_tool_call(tool_name: str, args: dict, max_len: int = 60) -> str:
     if tool_name == "answer_user":
         return "answer_user"
 
+    if tool_name == "agent_handoff":
+        target = args.get("target", "?")
+        return _truncate(f"handoff: {target}", max_len)
+
+    if tool_name == "mcp":
+        server = args.get("server", "?")
+        tool = args.get("tool", "?")
+        return _truncate(f"mcp: {server}/{tool}", max_len)
+
+    if tool_name == "web_search":
+        query = args.get("query", "")
+        return _truncate(f"search: {query}", max_len)
+
+    if tool_name == "browser":
+        action = args.get("action", "?")
+        url = args.get("url", "")
+        return _truncate(f"browser: {action} {url}", max_len)
+
     # Generic fallback
     arg_str = ", ".join(f"{k}={v}" for k, v in list(args.items())[:2])
     return _truncate(f"{tool_name}: {arg_str}", max_len)

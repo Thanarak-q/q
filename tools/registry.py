@@ -151,6 +151,12 @@ class ToolRegistry:
         from tools.code_analyzer_tool import CodeAnalyzerTool
         self.register(CodeAnalyzerTool())
 
+        from agent.handoffs import HandoffTool
+        self.register(HandoffTool())
+
+        from tools.mcp_client import MCPBridgeTool
+        self.register(MCPBridgeTool())
+
     @classmethod
     def from_subset(
         cls,
@@ -212,6 +218,14 @@ class ToolRegistry:
             from tools.code_analyzer_tool import CodeAnalyzerTool
             return CodeAnalyzerTool()
 
+        def _lazy_handoff():
+            from agent.handoffs import HandoffTool
+            return HandoffTool()
+
+        def _lazy_mcp():
+            from tools.mcp_client import MCPBridgeTool
+            return MCPBridgeTool()
+
         _TOOL_FACTORIES.update({
             "browser": _lazy_browser,
             "debugger": _lazy_debugger,
@@ -220,6 +234,8 @@ class ToolRegistry:
             "symbolic": _lazy_symbolic,
             "submit_deliverable": _lazy_submit,
             "code_analyzer": _lazy_code_analyzer,
+            "agent_handoff": _lazy_handoff,
+            "mcp": _lazy_mcp,
         })
 
         filtered = cls.__new__(cls)

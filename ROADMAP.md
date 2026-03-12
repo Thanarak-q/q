@@ -445,17 +445,19 @@ Inspired by: [CAI framework](https://github.com/aliasrobotics/cai) (41/45 flags 
 [Claude Code agent teams](https://code.claude.com/docs/en/agent-teams),
 [CTFAgent](https://www.sciencedirect.com/science/article/abs/pii/S2214212625003424) (plan-and-execute with stateful task tree)
 
-**P0 — Agent Handoffs (CAI pattern):**
-- [ ] Tool-based agent handoffs: `transfer_to_flag_discriminator` separates exploitation from flag verification
-- [ ] Specialized sub-agents per phase: recon agent, exploit agent, flag validator agent
-- [ ] Handoff filters: agents only see relevant context from predecessor
-- [ ] Why: CAI's segregation of duties (different models for different tasks) is their #1 innovation
+**P0 — Agent Handoffs (CAI pattern):** ✅ Done
+- [x] Tool-based agent handoffs: `agent_handoff` tool with targets: flag_discriminator, recon, exploit
+- [x] Flag discriminator agent: two-tier validation (heuristic + LLM) at `agent/flag_discriminator.py`
+- [x] Auto-runs on answer_user for FIND_FLAG intent; rejects invalid flags, continues loop
+- [x] Handoff tool registered in ToolRegistry, provider/config injected by orchestrator
+- [ ] Handoff filters: agents only see relevant context from predecessor (future)
 
-**P0 — MCP Integration:**
-- [ ] MCP server protocol for external tool integration (HTTP/SSE + stdio)
+**P0 — MCP Integration:** ✅ Done (client)
+- [x] MCP client: JSON-RPC 2.0 over stdio at `tools/mcp_client.py`
+- [x] MCPBridgeTool wraps external MCP tools into ToolRegistry
+- [x] `mcp_servers` config key in settings.json
 - [ ] Wrap CTF platform APIs as MCP servers (CTFd flag submission, challenge download)
 - [ ] MCP tool search: dynamically load tools when >10% context consumed
-- [ ] Why: industry standard (100M+ monthly downloads), extensible without core changes
 
 **P1 — Streaming Output:**
 - [ ] Token-by-token streaming to UI (not batch)
@@ -475,11 +477,11 @@ Inspired by: [CAI framework](https://github.com/aliasrobotics/cai) (41/45 flags 
 - [ ] Retrieve top-3 similar writeups during planning phase
 - [ ] Why: RAG materially improves solve rates (Byte Breach, CTFAgent)
 
-**P2 — Stop Hooks for Self-Verification:**
-- [ ] Fire hook when agent declares "done" — verify flag format, check answer quality
-- [ ] Return `ok: false` to force agent to continue if verification fails
-- [ ] Prevent premature answer_user calls with low-confidence answers
-- [ ] Why: Claude Code's stop hooks catch incomplete work before returning
+**P2 — Stop Hooks for Self-Verification:** ✅ Done
+- [x] `pre_answer` hook type in `agent/hooks.py` — verifies before returning
+- [x] Check types: `flag_format` (regex), `flag_discriminator` (heuristic), `shell` (exit code)
+- [x] Returns `(ok=false, feedback)` → orchestrator continues loop instead of returning
+- [x] _handle_answer_user returns None when rejected, react loop continues
 
 **P2 — Competing Hypothesis Mode:**
 - [ ] Spawn N agents testing different theories in parallel
@@ -500,11 +502,12 @@ Inspired by: [CAI framework](https://github.com/aliasrobotics/cai) (41/45 flags 
 - [ ] PermissionRequest hooks: approve/deny tool use programmatically
 - [ ] Why: Claude Code's hooks bridge "let AI decide" and "I need guarantees"
 
-**P3 — Flag Discrimination Agent:**
-- [ ] Dedicated agent that validates flag format, checks for false positives
+**P3 — Flag Discrimination Agent:** ✅ Done (merged with P0 handoffs)
+- [x] `FlagDiscriminator` at `agent/flag_discriminator.py` — two-tier validation
+- [x] Fast path: heuristic (pattern match, placeholder detection, regex detection, length check)
+- [x] Slow path: LLM verification using fast_model (optional, for low-confidence candidates)
 - [ ] Cross-reference with known flag patterns (base64, hex, nested encoding)
 - [ ] Auto-submit to CTFd platform via MCP
-- [ ] Why: CAI's flag_discriminator_agent prevents false flag submissions
 
 ---
 

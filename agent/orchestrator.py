@@ -266,6 +266,12 @@ class Orchestrator:
             brave_api_key=self._config.model.brave_api_key,
             max_output_chars=self._config.agent.tool_output_max_chars,
         )
+        # Inject provider/config into handoff tool for sub-agent LLM calls
+        handoff_tool = self._registry.get("agent_handoff")
+        if handoff_tool:
+            handoff_tool._provider = self._provider
+            handoff_tool._config = self._config
+
         self._context = ContextManager(self._provider, self._config)
         self._log = get_logger()
         self._iteration = 0
@@ -1140,7 +1146,10 @@ class Orchestrator:
 
             # Handle deferred answer_user
             if answer_tc is not None:
-                return self._handle_answer_user(answer_tc, category)
+                result = self._handle_answer_user(answer_tc, category)
+                if result is not None:
+                    return result
+                # Stop hook or discriminator rejected — continue loop
 
             # Flags found in tool output
             if all_found_flags:
@@ -1569,15 +1578,18 @@ class Orchestrator:
         self,
         tool_call: dict[str, Any],
         category: Category,
-    ) -> SolveResult:
+    ) -> SolveResult | None:
         """Handle the answer_user tool call and terminate the loop.
+
+        Returns None if a stop hook or flag discriminator rejects the answer,
+        allowing the react loop to continue.
 
         Args:
             tool_call: The answer_user tool call dict.
             category: Challenge category.
 
         Returns:
-            SolveResult with the answer.
+            SolveResult with the answer, or None if rejected by hooks.
         """
         func = tool_call["function"]
         tc_id = tool_call["id"]
@@ -1590,6 +1602,48 @@ class Orchestrator:
         answer = args.get("answer", "")
         confidence = args.get("confidence", "medium")
         flag = args.get("flag", "") or ""
+
+        # --- Stop hooks (pre-answer verification) ---
+        hook_ok, hook_feedback = self._hooks.pre_answer(
+            answer=answer,
+            flag=flag,
+            custom_flag_pattern=self._custom_flag_pattern or "",
+        )
+        if not hook_ok:
+            self._log.info(f"Stop hook rejected answer: {hook_feedback}")
+            self._context.add_tool_result(
+                tc_id,
+                f"STOP HOOK REJECTED: {hook_feedback}\n"
+                f"Your answer was not accepted. Fix the issue and call "
+                f"answer_user again.",
+            )
+            return None  # type: ignore[return-value]  # caller handles None
+
+        # --- Flag discriminator (automatic for FIND_FLAG intent) ---
+        if flag and self._intent and self._intent.intent == UserIntent.FIND_FLAG:
+            from agent.flag_discriminator import FlagDiscriminator
+
+            disc = FlagDiscriminator(
+                provider=self._provider,
+                config=self._config,
+                custom_pattern=self._custom_flag_pattern,
+            )
+            verdict = disc.validate(
+                candidate=flag,
+                context=answer,
+                challenge_description=(
+                    self._intent.specific_question if self._intent else ""
+                ),
+            )
+            if not verdict.is_valid:
+                self._log.info(f"Flag discriminator rejected: {verdict.reason}")
+                self._context.add_tool_result(
+                    tc_id,
+                    f"FLAG DISCRIMINATOR REJECTED: {verdict.reason}\n"
+                    f"The flag '{flag}' appears to be invalid. Continue "
+                    f"investigating to find the real flag.",
+                )
+                return None  # type: ignore[return-value]
 
         # --- Evidence validation (anti-hallucination) ---
         claims = extract_claims(answer)

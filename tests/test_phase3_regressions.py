@@ -39,7 +39,7 @@ class _DummyDisplay:
     def show_answer(self, answer: str, confidence: str) -> None:
         return None
 
-    def show_done(self, steps: int, tokens: int, cost: float) -> None:
+    def show_done(self, steps: int, tokens: int, cost: float, **kwargs) -> None:
         self.done.append({"steps": steps, "tokens": tokens, "cost": cost})
 
     def show_flag_result(self, **kwargs) -> None:
@@ -57,6 +57,7 @@ class _DummyCallbacks:
         self._found_flag = None
         self._found_answer = ""
         self._answer_confidence = "medium"
+        self._solve_start_time: float = 0.0
 
     def reset_for_new_solve(self) -> None:
         return None

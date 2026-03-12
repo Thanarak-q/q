@@ -15,7 +15,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
-VERSION = "0.8.0"
+VERSION = "1.1.0"
 
 # Simplified theme — only the styles still needed
 CHAT_THEME = Theme(
@@ -149,11 +149,26 @@ class Display:
         """Display a found flag — single line, no panel."""
         self.console.print(f"[bold green]\U0001f6a9 Flag: {flag}[/bold green]")
 
-    def show_done(self, steps: int, tokens: int, cost: float) -> None:
-        """Display the final summary line."""
+    def show_done(
+        self,
+        steps: int,
+        tokens: int,
+        cost: float,
+        elapsed_s: float = 0.0,
+    ) -> None:
+        """Display the final summary line with optional elapsed time."""
         tokens_str = f"{tokens / 1000:.1f}k" if tokens >= 1000 else str(tokens)
+        time_str = ""
+        if elapsed_s > 0:
+            if elapsed_s < 60:
+                time_str = f"{elapsed_s:.1f}s"
+            else:
+                minutes = int(elapsed_s // 60)
+                seconds = int(elapsed_s % 60)
+                time_str = f"{minutes}m{seconds}s"
+            time_str = f" \u00b7 {time_str}"
         self.console.print(
-            f"[dim]Done ({steps} steps \u00b7 {tokens_str} tokens \u00b7 ${cost:.2f})[/dim]"
+            f"[dim]Done ({steps} steps \u00b7 {tokens_str} tokens \u00b7 ${cost:.2f}{time_str})[/dim]"
         )
 
     # ------------------------------------------------------------------

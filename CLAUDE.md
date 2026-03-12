@@ -53,9 +53,46 @@ agentq
 ### Tool registry
 
 - `tools/registry.py` — tool registration, dispatch, smart output truncation
-- `from_subset()` uses lazy factories — only instantiates requested tools (not all 14)
+- `from_subset()` uses lazy factories — only instantiates requested tools (not all 17)
 - `max_output_chars` injected at construction, not re-read from config on every call
 - Heavy tools (browser, symbolic) use deferred imports
+
+### Agent handoffs (CAI pattern)
+
+- `agent/handoffs.py` — `HandoffTool`: LLM-invocable agent handoffs
+- `agent/flag_discriminator.py` — `FlagDiscriminator`: validates candidate flags before submission
+- Handoff targets: `flag_discriminator`, `recon`, `exploit`
+- Flag discriminator runs automatically on `answer_user` for FIND_FLAG intent
+- Two-tier validation: fast heuristic (no LLM) + optional LLM verification
+
+### MCP integration
+
+- `tools/mcp_client.py` — MCP JSON-RPC 2.0 client for stdio-based servers
+- `MCPBridgeTool` wraps external MCP tools into the ToolRegistry
+- Configure servers in `~/.q/settings.json` via `mcp_servers`
+
+### Stop hooks (pre-answer verification)
+
+- `agent/hooks.py` — `pre_answer` hook type validates before returning
+- Check types: `flag_format` (regex), `flag_discriminator` (heuristic), `shell` (exit code)
+- If a stop hook rejects, the agent continues solving instead of returning
+
+### UI/UX layer
+
+- `ui/display.py` — Rich-based rendering (banner with pixel-art capybara, answer/flag display, tables)
+- `ui/tree.py` — `TaskTree`: ANSI-based streaming tree renderer (Claude Code-style output)
+- `ui/spinner.py` — `LiveSpinner` (ANSI, coexists with tree) + `PhaseSpinner` (Rich Status)
+  - `set_phase_detail()` shows live token count during LLM generation in minimal mode
+- `ui/watch.py` — `WatchDisplay`: 2x2 Rich Live dashboard (thinking, tool output, tree, stats)
+- `ui/mascot.py` — Pixel-art capybara rendered with ANSI true-color half-blocks (4 expressions)
+- `ui/chat.py` — `ChatCallbacks`: routes orchestrator events to tree/display/spinner
+  - Elapsed time tracking: `_solve_start_time` → passed to `show_done()` for all solve paths
+- `ui/selector.py` — Arrow-key interactive selectors for commands
+- `ui/input_handler.py` — prompt_toolkit REPL with completion, history, multi-line
+- `ui/input_filter.py` — Adaptive routing: challenge vs chat turn detection
+- `ui/commands.py` — `/tools` command lists all registered tools with descriptions
+- Streaming: `on_thinking_delta` increments token counter; updates spinner detail every 5 tokens
+- Phase verbs: `PHASE_VERBS` map tool/phase names to human-friendly display text
 
 ### Dynamic behavior
 
@@ -112,13 +149,14 @@ Interactive flow enforces:
 python -m unittest discover -s tests -v
 ```
 
-Key test files (73 tests):
+Key test files (113 tests):
 - `tests/test_phase3_regressions.py` — core pipeline regressions
 - `tests/test_guardrails.py` — cost/token guardrails
 - `tests/test_input_handler.py` — input handling
 - `tests/test_ai_ctf.py` — AI payloads, category, flag extractor
 - `tests/test_ai_e2e.py` — E2E with live HTTP chatbot server
 - `tests/test_team.py` — team system (TaskBoard, MessageBus, presets, isolation)
+- `tests/test_handoffs.py` — agent handoffs, flag discriminator, MCP client, stop hooks
 
 E2E transcript docs:
 - `transcripts/interactive-troubleshooting.md`
@@ -144,7 +182,7 @@ Fallback: if primary model fails and `fallback_model` is set, retries once (guar
 ### Tools
 
 Tool registry: `tools/registry.py`
-Registered tools (15): `shell`, `python_exec`, `file_manager`, `network`, `recon`, `web_search`, `llm_interact`, `answer_user`, `browser`, `debugger`, `pwntools_session`, `netcat_session`, `symbolic`, `code_analyzer`
+Registered tools (17): `shell`, `python_exec`, `file_manager`, `network`, `recon`, `web_search`, `llm_interact`, `answer_user`, `browser`, `debugger`, `pwntools_session`, `netcat_session`, `symbolic`, `code_analyzer`, `agent_handoff`, `mcp`
 
 Common chat subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_user`
 
@@ -166,7 +204,7 @@ Common chat subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_u
 - `agent/team/taskboard.py` — thread-safe TaskBoard with DAG
 - `agent/team/roles.py` — TEAM_PRESETS per category (all 8 categories)
 - `ui/chat.py` — adaptive turn router + run_solve/run_chat_turn + guardrails
-- `ui/commands.py` — slash commands (`/model`, `/config`, `/flag`, `/team`, etc.)
+- `ui/commands.py` — slash commands (`/model`, `/config`, `/flag`, `/team`, `/tools`, etc.)
 - `ui/selector.py` — interactive arrow-key selectors
 - `tools/shell.py` — non-interactive policy + recovery
 - `tools/llm_interact.py` — AI target interaction (9 actions + deep-scan)
@@ -174,6 +212,7 @@ Common chat subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_u
 - `tools/file_manager.py` — safe workspace-bounded path resolution
 - `tools/registry.py` — tool registration + lazy factories + smart truncation
 - `tools/code_analyzer_tool.py` — BaseTool wrapper for static vuln scanner
+- `tools/mcp_client.py` — MCP client + MCPBridgeTool for external tool servers
 - `config_yaml/loader.py` — safe YAML overlay via dataclass replace
 - `config.py` — AppConfig (mutable) + frozen sub-configs + settings key validation
 - `utils/flag_extractor.py` — flag pattern matching (incl. NCSA{})
@@ -182,3 +221,6 @@ Common chat subset: `shell`, `file_manager`, `python_exec`, `network`, `answer_u
 - `skills/ai.md` — AI security skill reference
 - `skills/osint.md` — comprehensive OSINT skill (700+ lines)
 - `agent/providers/glm_provider.py` — Zhipu AI GLM provider (OpenAI-compatible)
+- `agent/handoffs.py` — CAI-inspired agent handoff tool (flag_discriminator, recon, exploit)
+- `agent/flag_discriminator.py` — two-tier flag validation (heuristic + LLM)
+- `agent/hooks.py` — hook engine with pre_answer stop hooks

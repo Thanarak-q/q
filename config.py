@@ -29,6 +29,7 @@ _KNOWN_SETTINGS_KEYS: set[str] = {
     "ocr_enabled", "ocr_model", "ocr_max_tokens",
     "plan_mode", "sandbox_mode",
     "category_models",
+    "mcp_servers",
 }
 
 

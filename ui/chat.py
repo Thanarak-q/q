@@ -108,6 +108,9 @@ class ChatCallbacks(AgentCallbacks):
         self._answer_confidence: str = ""
         self._root_set: bool = False
         self._spinner: PhaseSpinner | None = None
+        self._streaming_buffer: str = ""
+        self._streaming_tokens: int = 0
+        self._solve_start_time: float = 0.0
 
     # -- Lifecycle -------------------------------------------------
 
@@ -119,6 +122,9 @@ class ChatCallbacks(AgentCallbacks):
         self._found_answer = None
         self._answer_confidence = ""
         self._root_set = False
+        self._streaming_buffer = ""
+        self._streaming_tokens = 0
+        self._solve_start_time = time.time()
 
     def set_spinner(self, spinner: object | None) -> None:
         """Attach a spinner so callbacks can update phase text.
@@ -169,12 +175,31 @@ class ChatCallbacks(AgentCallbacks):
                 self._display.console.print(f"│     [dim]{line}[/dim]")
 
     def on_thinking_delta(self, delta: str) -> None:
-        """Stream thinking text in verbose mode."""
+        """Stream thinking tokens to terminal.
+
+        Verbose mode: prints all tokens directly.
+        Non-verbose mode: updates spinner with token count for responsiveness.
+        """
+        self._streaming_tokens += 1
+
         if self._state.verbose:
             import sys
 
+            # Pause spinner for clean output
+            spinner = self._spinner
+            if spinner and hasattr(spinner, "clear_for_output"):
+                spinner.clear_for_output()
             sys.stdout.write(delta)
             sys.stdout.flush()
+            if spinner and hasattr(spinner, "done_output"):
+                spinner.done_output()
+        else:
+            # Update spinner with token count every 5 tokens for feedback
+            self._streaming_buffer += delta
+            if self._streaming_tokens % 5 == 0:
+                spinner = self._spinner
+                if spinner and hasattr(spinner, "set_phase_detail"):
+                    spinner.set_phase_detail(f"{self._streaming_tokens} tokens")
 
     # -- Tool calls ------------------------------------------------
 
@@ -655,6 +680,7 @@ def run_chat_turn(
     if result:
         cost_delta = max(0.0, state.session_cost_tracker.total_cost - cost_before)
         tokens_delta = max(0, state.session_cost_tracker.total_tokens - tokens_before)
+        elapsed = time.time() - callbacks._solve_start_time if callbacks._solve_start_time else 0.0
 
         if callbacks._found_answer:
             display.show_answer(callbacks._found_answer, callbacks._answer_confidence)
@@ -662,6 +688,7 @@ def run_chat_turn(
             result.iterations,
             tokens_delta or result.total_tokens,
             cost_delta or result.cost_usd,
+            elapsed_s=elapsed,
         )
         state.total_session_cost = state.session_cost_tracker.total_cost
         _show_guardrail_warning(
@@ -924,6 +951,7 @@ def run_solve(
     if result:
         cost_delta = max(0.0, state.session_cost_tracker.total_cost - cost_before)
         tokens_delta = max(0, state.session_cost_tracker.total_tokens - tokens_before)
+        elapsed = time.time() - callbacks._solve_start_time if callbacks._solve_start_time else 0.0
 
         # Show result with mascot for flag/fail, plain for answers
         if callbacks._found_flag:
@@ -953,6 +981,7 @@ def run_solve(
                 result.iterations,
                 tokens_delta or result.total_tokens,
                 cost_delta or result.cost_usd,
+                elapsed_s=elapsed,
             )
 
         # Record in history
@@ -1072,6 +1101,8 @@ def _run_team_solve(
         state._team_leader = None
 
     if result:
+        elapsed = time.time() - callbacks._solve_start_time if callbacks._solve_start_time else 0.0
+
         if callbacks._found_flag:
             display.show_flag_result(
                 flag=callbacks._found_flag,
@@ -1095,7 +1126,7 @@ def _run_team_solve(
                 display.show_answer(
                     callbacks._found_answer, callbacks._answer_confidence
                 )
-            display.show_done(result.iterations, result.total_tokens, result.cost_usd)
+            display.show_done(result.iterations, result.total_tokens, result.cost_usd, elapsed_s=elapsed)
 
         # Show team summary
         if result.summary:

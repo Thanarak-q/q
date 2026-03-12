@@ -40,6 +40,10 @@ PHASE_VERBS: dict[str, str] = {
     "llm_interact": "Probing target AI",
     "answer_user": "Preparing answer",
     "evidence_tracker": "Verifying evidence",
+    "agent_handoff": "Consulting specialist",
+    "mcp": "Calling external tool",
+    "web_search": "Searching the web",
+    "symbolic": "Running symbolic analysis",
     "refine": "Refining plan",
     "thinking": "Thinking",
 }
@@ -57,6 +61,7 @@ class LiveSpinner:
 
     def __init__(self) -> None:
         self._phase = "Thinking"
+        self._detail = ""
         self._idx = 0
         self._active = False
         self._paused = False
@@ -83,11 +88,18 @@ class LiveSpinner:
         verb = PHASE_VERBS.get(phase, phase.replace("_", " ").title())
         with self._lock:
             self._phase = verb
+            self._detail = ""
+
+    def set_phase_detail(self, detail: str) -> None:
+        """Update the detail suffix (e.g. token count) without changing phase."""
+        with self._lock:
+            self._detail = detail
 
     def reset(self) -> None:
         """Reset to default 'Thinking' phase."""
         with self._lock:
             self._phase = "Thinking"
+            self._detail = ""
 
     def clear_for_output(self) -> None:
         """Pause spinner and clear its line before external stdout writes."""
@@ -112,8 +124,9 @@ class LiveSpinner:
             return
         frame = self.FRAMES[self._idx % len(self.FRAMES)]
         self._idx += 1
+        detail = f" ({self._detail})" if self._detail else ""
         sys.stdout.write(
-            f"\r\033[2K  \033[36m{frame}\033[0m \033[2m{self._phase}...\033[0m"
+            f"\r\033[2K  \033[36m{frame}\033[0m \033[2m{self._phase}...{detail}\033[0m"
         )
         sys.stdout.flush()
 

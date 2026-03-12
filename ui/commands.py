@@ -57,6 +57,7 @@ COMMAND_HELP: dict[str, str] = {
     "/verbose [on|off]": "Toggle verbose mode",
     "/clear": "Clear screen and reset context",
     "/mode": "Show pipeline mode",
+    "/tools": "List all registered tools",
     "/help": "Show this help message",
     "/exit, /quit": "Exit with session summary",
 }
@@ -170,6 +171,7 @@ def handle_command(
         "/flag": _cmd_flag,
         "/suggest": _cmd_suggest,
         "/compare": _cmd_compare,
+        "/tools": _cmd_tools,
         "/exit": _cmd_exit,
         "/quit": _cmd_exit,
     }
@@ -1388,6 +1390,28 @@ def _cmd_compare(arg: str, state: ChatState, display: Display) -> bool:
     except Exception as exc:
         display.show_error(f"Compare failed: {exc}")
 
+    return False
+
+
+def _cmd_tools(arg: str, state: ChatState, display: Display) -> bool:
+    """List all registered tools with descriptions."""
+    from rich.table import Table
+
+    from tools.registry import ToolRegistry
+
+    reg = ToolRegistry()
+
+    table = Table(title="Registered Tools")
+    table.add_column("Tool", style="cyan", min_width=18)
+    table.add_column("Description", max_width=60)
+
+    for name in reg.list_names():
+        tool = reg.get(name)
+        desc = tool.description[:80] if tool else "?"
+        table.add_row(name, desc)
+
+    display.console.print(table)
+    display.console.print(f"\n  [dim]{len(reg.list_names())} tools available[/dim]\n")
     return False
 
 
